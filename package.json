@@ -1,0 +1,26 @@
+{
+  "name": "toefl-ai-prep",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TOEFL iBT AI preparation platform (monorepo)",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace @toefl/api",
+    "dev:web": "npm run dev --workspace @toefl/web",
+    "build": "npm run build --workspace @toefl/api && npm run build --workspace @toefl/web",
+    "build:api": "npm run build --workspace @toefl/api",
+    "build:web": "npm run build --workspace @toefl/web",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspace @toefl/api",
+    "prisma:generate": "npm run prisma:generate --workspace @toefl/api",
+    "prisma:migrate": "npm run prisma:migrate --workspace @toefl/api",
+    "db:seed": "npm run db:seed --workspace @toefl/api"
+  },
+  "engines": {
+    "node": ">=20 <23"
+  },
+  "license": "MIT"
+}
