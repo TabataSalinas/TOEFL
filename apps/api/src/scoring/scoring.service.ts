@@ -107,7 +107,7 @@ export class ScoringService {
             },
           },
         },
-        sectionAttemptId,
+        sectionAttempt: { connect: { id: sectionAttemptId } },
         section: sectionAttempt.section,
         rawCorrect: correct,
         rawTotal: total,

@@ -96,7 +96,7 @@ export class TutorService {
             title: it.title,
             description: it.description,
             estMinutes: it.estMinutes,
-            estPointsGain: it.estPointsGain as unknown as Prisma.Decimal | number,
+            estPointsGain: Number(it.estPointsGain),
           })),
         },
       },

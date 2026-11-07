@@ -17,7 +17,7 @@ export class TutorController {
 
   @Get('analysis')
   @ApiOperation({ summary: 'Coach analysis: weaknesses, strengths, summary, time-to-target' })
-  analyze(@CurrentUser() user: AuthUser) {
+  async analyze(@CurrentUser() user: AuthUser): Promise<any> {
     return this.tutor.analyze(user.userId);
   }
 

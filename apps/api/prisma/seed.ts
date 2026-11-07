@@ -4,7 +4,7 @@
  *
  * Demo credentials: demo@toefl.local / DemoPass123!
  */
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { MockAiProvider } from '../src/ai/providers/mock.provider';
 import { SECTION_BLUEPRINTS } from '../src/common/toefl.constants';
@@ -119,7 +119,7 @@ async function main() {
             type: gq.type,
             section: 'READING',
             prompt: gq.prompt,
-            options: gq.options,
+            options: gq.options as unknown as Prisma.InputJsonValue,
             correctAnswer: gq.correctAnswer,
             explanation: gq.explanation,
             skillTag: gq.skillTag,

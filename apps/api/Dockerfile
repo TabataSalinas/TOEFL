@@ -18,11 +18,10 @@ WORKDIR /app/apps/api
 ENV NODE_ENV=production
 
 COPY --from=build /app/node_modules /app/node_modules
-COPY --from=build /app/apps/api/node_modules ./node_modules
 COPY --from=build /app/apps/api/dist ./dist
 COPY --from=build /app/apps/api/prisma ./prisma
 COPY apps/api/package.json ./package.json
 
 EXPOSE 4000
 # Apply migrations then start. (Migrations are created on first `prisma migrate`.)
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main.js"]

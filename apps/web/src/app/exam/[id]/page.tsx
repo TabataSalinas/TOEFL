@@ -142,7 +142,7 @@ export default function ExamRunnerPage() {
       <div className="mx-auto max-w-3xl p-6">
         <h1 className="text-2xl font-bold">Exam in progress</h1>
         <p className="muted">
-          Sections start one at a time. Once a section's timer starts, it cannot
+          Sections start one at a time. Once a section&apos;s timer starts, it cannot
           be paused.
         </p>
         <div className="mt-6 space-y-3">
