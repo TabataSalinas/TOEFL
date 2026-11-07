@@ -1,153 +1,150 @@
-import { Injectable, Logger } from '@nestjs/common';
-import OpenAI from 'openai';
-import { QuestionType } from '@prisma/client';
+import { Logger } from '@nestjs/common';
+import OpenAI, { toFile } from 'openai';
 import {
   AiProvider,
-  CoachSummaryInput,
-  GenerateSectionParams,
-  GeneratedSection,
+  GenerateTaskParams,
+  GeneratedStimulus,
+  GeneratedTask,
+  JsonCompletionOptions,
+  TranscriptionResult,
 } from '../ai.types';
+import { buildPrompt, parseLlmTask } from '../llm-task';
+import { validateStimulus } from '../../content/quality';
+import { TaskKind } from '../../common/toefl.constants';
+
+const VERIFIABLE: TaskKind[] = ['ACADEMIC_PASSAGE', 'ACADEMIC_TALK', 'CONVERSATION', 'DAILY_LIFE'];
 
 /**
- * OpenAI-backed provider. Produces original TOEFL-style content via structured
- * JSON output. Throws on failure so the AiService can fall back to the mock
- * provider — the platform never hard-fails because of the AI layer.
+ * OpenAI-backed provider: item generation (JSON mode), self-verification of the answer
+ * key, embeddings (RAG), speech-to-text (Whisper) and text-to-speech.
+ * Failures throw so AiService can fall back to the offline bank.
  */
-@Injectable()
 export class OpenAiProvider implements AiProvider {
   readonly name = 'openai';
   private readonly logger = new Logger(OpenAiProvider.name);
   private readonly client: OpenAI;
-  private readonly model: string;
+  readonly model: string;
 
   constructor() {
     this.client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     this.model = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
   }
 
-  async generateSection(
-    params: GenerateSectionParams,
-  ): Promise<GeneratedSection> {
-    const isObjective =
-      params.section === 'READING' || params.section === 'LISTENING';
-
-    const system = [
-      'You are an expert TOEFL iBT item writer.',
-      'Generate ORIGINAL academic content inspired by the structure and style of',
-      'the TOEFL iBT. Never reproduce copyrighted ETS material.',
-      'Return STRICT JSON only, matching the requested schema.',
-    ].join(' ');
-
-    const user = this.buildPrompt(params, isObjective);
-
-    const completion = await this.client.chat.completions.create({
+  async completeJson(system: string, user: string, opts: JsonCompletionOptions = {}): Promise<Record<string, unknown>> {
+    const res = await this.client.chat.completions.create({
       model: this.model,
-      temperature: 0.9,
+      temperature: opts.temperature ?? 0.8,
+      max_tokens: opts.maxTokens,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
     });
-
-    const raw = completion.choices[0]?.message?.content;
-    if (!raw) throw new Error('OpenAI returned empty content');
-
-    const parsed = JSON.parse(raw) as GeneratedSection;
-    return this.normalize(parsed, params);
+    const content = res.choices[0]?.message?.content;
+    if (!content) throw new Error('OpenAI returned empty content');
+    return JSON.parse(content) as Record<string, unknown>;
   }
 
-  private buildPrompt(
-    params: GenerateSectionParams,
-    isObjective: boolean,
-  ): string {
-    const avoid =
-      params.avoidTopics && params.avoidTopics.length
-        ? `Avoid these recently used topics: ${params.avoidTopics.join(', ')}.`
-        : '';
+  async generateTask(params: GenerateTaskParams): Promise<GeneratedTask> {
+    const { system, user } = buildPrompt(params);
+    let feedback = '';
+    let lastError: Error = new Error('generation failed');
 
-    if (isObjective) {
-      return [
-        `Create a TOEFL ${params.section} section at "${params.difficulty}" difficulty.`,
-        `Generate ${params.passages} ${
-          params.section === 'READING' ? 'passages' : 'listening transcripts'
-        }, each with ${params.questionsPerPassage} multiple-choice questions.`,
-        avoid,
-        'Each passage must be 220-320 words, academic in tone, and self-contained.',
-        'Each question must have exactly 4 options (ids "A","B","C","D"), one correct answer,',
-        'a clear explanation, and a skillTag (e.g. "inference","vocabulary","detail","main-idea").',
-        'JSON schema:',
-        '{ "section": string, "instructions": string, "passages": [',
-        '  { "title": string, "topic": string, "body": string,',
-        '    "audioScript": string | null,',
-        '    "questions": [ { "type": string, "prompt": string,',
-        '      "options": [ {"id": string, "text": string} ],',
-        '      "correctAnswer": string, "explanation": string,',
-        '      "skillTag": string, "points": number } ] } ] }',
-      ].join('\n');
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const raw = await this.completeJson(system, user + feedback, {
+          temperature: attempt === 0 ? 0.9 : 0.6,
+          maxTokens: 3500,
+        });
+        const stimuli = parseLlmTask(params, raw);
+        this.assertQuality(params, stimuli);
+        if (VERIFIABLE.includes(params.kind) && process.env.AI_VERIFY_KEYS !== 'false') {
+          await this.verifyKeys(stimuli);
+        }
+        return { kind: params.kind, stimuli, generatedBy: this.name };
+      } catch (err) {
+        lastError = err as Error;
+        this.logger.warn(`Attempt ${attempt + 1} for ${params.kind} rejected: ${lastError.message}`);
+        feedback = `\n\nYour previous answer was rejected for these reasons: ${lastError.message}. Fix them and return the complete JSON again.`;
+      }
     }
-
-    return [
-      `Create a TOEFL ${params.section} section at "${params.difficulty}" difficulty.`,
-      'Generate 2 tasks (one independent, one integrated with a short stimulus).',
-      avoid,
-      'JSON schema:',
-      '{ "section": string, "instructions": string, "passages": [],',
-      '  "tasks": [ { "type": string, "prompt": string, "skillTag": string,',
-      '  "stimulus": string | null } ] }',
-    ].join('\n');
+    throw lastError;
   }
 
-  /** Clamp/validate the model output into known enums and shapes. */
-  private normalize(
-    section: GeneratedSection,
-    params: GenerateSectionParams,
-  ): GeneratedSection {
-    const validTypes = new Set(Object.values(QuestionType));
-    const fallbackType: QuestionType =
-      params.section === 'READING' ? 'READING_FACTUAL' : 'LISTENING_DETAIL';
+  private assertQuality(params: GenerateTaskParams, stimuli: GeneratedStimulus[]): void {
+    const problems: string[] = [];
+    stimuli.forEach((s, i) => {
+      const expected = params.questionCounts[i] ?? params.questionCounts[0];
+      const rep = validateStimulus(params.kind, s, expected, { recentTexts: params.avoidTexts });
+      if (!rep.ok) problems.push(`stimulus ${i + 1}: ${rep.problems.join('; ')}`);
+    });
+    if (problems.length) throw new Error(problems.join(' | '));
+  }
 
-    const passages = (section.passages ?? []).map((p) => ({
-      title: p.title ?? 'Untitled',
-      body: p.body ?? '',
-      topic: p.topic ?? 'general',
-      audioScript: p.audioScript,
-      questions: (p.questions ?? []).map((q) => ({
-        type: validTypes.has(q.type) ? q.type : fallbackType,
-        prompt: q.prompt ?? '',
-        options: q.options ?? [],
-        correctAnswer: q.correctAnswer ?? 'A',
-        explanation: q.explanation ?? '',
-        skillTag: q.skillTag ?? 'general',
-        points: q.points ?? 1,
-      })),
+  /** Blind second pass: another call answers the questions; large disagreement rejects the item. */
+  private async verifyKeys(stimuli: GeneratedStimulus[]): Promise<void> {
+    const payload = stimuli.map((s, si) => ({
+      stimulus: si,
+      text: s.body,
+      questions: s.questions.map((q, qi) => ({ question: qi, prompt: q.prompt, options: (q.options ?? []).map((o) => o.text) })),
     }));
+    const res = await this.completeJson(
+      'You are a careful test taker. For each question choose the single best option using only the text. Return JSON {"answers":[{"stimulus":int,"question":int,"choice":0-3}]}.',
+      JSON.stringify(payload),
+      { temperature: 0, maxTokens: 800 },
+    );
+    const answers = Array.isArray(res.answers) ? (res.answers as Array<{ stimulus: number; question: number; choice: number }>) : [];
+    let total = 0;
+    let mismatches = 0;
+    stimuli.forEach((s, si) =>
+      s.questions.forEach((q, qi) => {
+        total++;
+        const a = answers.find((x) => x.stimulus === si && x.question === qi);
+        const keyIdx = ['A', 'B', 'C', 'D'].indexOf(String(q.correctAnswer));
+        if (!a || a.choice !== keyIdx) mismatches++;
+      }),
+    );
+    if (total > 0 && mismatches / total > 0.2) {
+      throw new Error(`answer-key verification disagreed on ${mismatches}/${total} questions`);
+    }
+  }
 
+  async embed(texts: string[]): Promise<number[][]> {
+    const res = await this.client.embeddings.create({
+      model: process.env.OPENAI_EMBEDDING_MODEL ?? 'text-embedding-3-small',
+      input: texts,
+    });
+    return res.data.map((d) => d.embedding);
+  }
+
+  async transcribe(buffer: Buffer, filename: string, mime: string): Promise<TranscriptionResult> {
+    const file = await toFile(buffer, filename, { type: mime });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res = (await this.client.audio.transcriptions.create({
+      file,
+      model: process.env.OPENAI_STT_MODEL ?? 'whisper-1',
+      response_format: 'verbose_json',
+      timestamp_granularities: ['word', 'segment'],
+      language: 'en',
+    } as any)) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const segments: Array<{ avg_logprob?: number }> = res.segments ?? [];
+    const logprobs = segments.map((s) => s.avg_logprob).filter((x): x is number => typeof x === 'number');
+    const confidence = logprobs.length ? Math.exp(logprobs.reduce((a, b) => a + b, 0) / logprobs.length) : null;
     return {
-      section: params.section,
-      instructions: section.instructions ?? '',
-      timeLimitSec: 0,
-      passages,
-      tasks: section.tasks,
+      text: String(res.text ?? '').trim(),
+      durationSec: Number(res.duration ?? 0),
+      words: ((res.words ?? []) as Array<{ word: string; start: number; end: number }>).map((w) => ({ word: w.word, start: w.start, end: w.end })),
+      confidence,
     };
   }
 
-  async generateCoachSummary(input: CoachSummaryInput): Promise<string> {
-    const completion = await this.client.chat.completions.create({
-      model: this.model,
-      temperature: 0.6,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You are a supportive, concrete TOEFL tutor. Give actionable, specific advice in 4-6 sentences.',
-        },
-        {
-          role: 'user',
-          content: `Target total: ${input.targetScore}/120. Estimated total: ${input.estimatedTotal}/120. Weakest skills: ${JSON.stringify(input.weakestSkills)}. Strongest: ${JSON.stringify(input.strongestSkills)}. Write a short coaching summary.`,
-        },
-      ],
+  async speak(text: string, voice: string): Promise<Buffer> {
+    const res = await this.client.audio.speech.create({
+      model: process.env.OPENAI_TTS_MODEL ?? 'tts-1',
+      voice: voice as 'alloy',
+      input: text,
     });
-    return completion.choices[0]?.message?.content ?? '';
+    return Buffer.from(await res.arrayBuffer());
   }
 }

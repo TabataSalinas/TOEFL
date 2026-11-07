@@ -21,6 +21,12 @@ export class ReportsController {
     return this.reports.getSkillAccuracy(user.userId);
   }
 
+  @Get('timings')
+  @ApiOperation({ summary: 'Average answer time per task type' })
+  timings(@CurrentUser() user: AuthUser) {
+    return this.reports.getTimings(user.userId);
+  }
+
   @Get('attempts/:id')
   @ApiOperation({ summary: 'Detailed report for a completed attempt' })
   attempt(@CurrentUser() user: AuthUser, @Param('id') id: string) {

@@ -9,6 +9,8 @@ const links = [
   { href: '/dashboard', label: 'Dashboard' },
   { href: '/practice', label: 'Practice' },
   { href: '/history', label: 'History' },
+  { href: '/recordings', label: 'Recordings' },
+  { href: '/rubrics', label: 'Rubrics' },
   { href: '/tutor', label: 'AI Coach' },
   { href: '/settings', label: 'Settings' },
 ];

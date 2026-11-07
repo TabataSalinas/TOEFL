@@ -21,31 +21,24 @@ verdad**, no como esqueleto. El esquema de datos ya contempla todas las fases.
   adaptativo con ganancia estimada de puntos y semanas al objetivo.
 - Pruebas unitarias (scoring, generador) y e2e (smoke de API).
 
-## 🔜 Fase 2 — Speaking, Writing y RAG
+## ✅ Fase 2 — Formato 2026, Writing, Speaking y RAG (esta entrega)
 
-- **Writing**: evaluación por IA con rúbrica (gramática, vocabulario,
-  organización, coherencia, cohesión, desarrollo), corrección de errores,
-  justificación de puntaje y **versión mejorada** del texto.
-- **Speaking**:
-  - Grabación de audio, **speech-to-text** (transcripción automática).
-  - Métricas: fluidez, velocidad de habla, pausas largas, silencios,
-    muletillas, claridad, ritmo; evaluación de pronunciación/gramática/
-    vocabulario/coherencia.
-- **Sistema RAG**: `KnowledgeChunk` + embeddings (migrable a `pgvector`) para
-  consultar rúbricas y ejemplos de referencia, mejorando consistencia de las
-  calificaciones y fundamentando la retroalimentación.
-- Síntesis de audio (TTS) para la narración real de Listening.
+- **Rediseño al formato 2026** (ver [`FORMAT_2026.md`](FORMAT_2026.md)): 12 tipos de tarea, módulos adaptativos, orden oficial, relojes por tarea/pregunta.
+- **Writing**: *Build a Sentence* (auto), *Email* y *Academic Discussion* con rúbrica, errores corregidos, justificación y versión mejorada.
+- **Speaking**: grabación automática, STT (Whisper / navegador), pausas, silencios, ritmo, muletillas, fluidez, continuidad, cumplimiento del tiempo,
+  *Listen and Repeat* con alineación palabra a palabra, *Interview* con rúbrica; revisión de grabaciones.
+- **RAG**: rúbricas, ejemplos calificados y guías; recuperación híbrida; evaluación con varias muestras y citas.
+- **Contenido "ilimitado"** (ver [`CONTENT_SOURCES.md`](CONTENT_SOURCES.md)): generación por IA + control de calidad + antirrepetición + fuentes abiertas con atribución.
+- Coach: ejercicios y recursos por habilidad, plan que se regenera solo; analíticas por sección y comparación de intentos.
+- TTS en servidor (opcional) y prueba de micrófono/altavoces/cámara previa al examen.
 
-## 🔜 Fase 3 — Inmersión y coach avanzado
+## 🔜 Fase 3 — Inmersión, OAuth y calibración
 
-- **Proctoring/condiciones reales**: solicitud y verificación de cámara/micrófono,
-  pruebas previas de audio/vídeo, grabación automática de Speaking con
-  inicio/fin por tiempo, alertas de "tiempo por terminar".
+- **Proctoring**: supervisión con cámara (hoy solo vista previa local), detección de salida de pestaña.
 - **OAuth** (Google/GitHub) y entrega de email para reset de contraseña.
-- Analíticas avanzadas: comparación entre intentos, tiempos promedio por tipo,
-  tendencias; revisión de grabaciones anteriores.
-- Coach adaptativo que **actualiza el plan automáticamente** según el progreso y
-  estima puntos ganables por habilidad con mayor precisión (usando RAG).
+- **Calibración**: contrastar tus puntajes estimados con resultados oficiales para ajustar los pesos de `SCORING.md`.
+- Pronunciación a nivel fonético (servicio especializado), pre-generación en segundo plano del banco de ítems, importación de textos propios.
+- Migraciones Prisma versionadas, CI con e2e en contenedor.
 
 ## Notas de diseño que facilitan las fases siguientes
 

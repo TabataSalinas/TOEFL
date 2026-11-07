@@ -23,8 +23,8 @@ export class ExamsController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get an exam blueprint (without correct answers hidden)' })
+  @ApiOperation({ summary: 'Exam blueprint summary (never includes questions or answers)' })
   get(@Param('id') id: string) {
-    return this.exams.findById(id);
+    return this.exams.summary(id);
   }
 }

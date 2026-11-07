@@ -86,7 +86,45 @@ async function tryRefresh(): Promise<boolean> {
   }
 }
 
+/** Multipart upload (e.g. speaking recordings). */
+async function upload<T>(path: string, form: FormData, retry = true): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (tokenStore.access) headers.Authorization = `Bearer ${tokenStore.access}`;
+  const res = await fetch(`${API_URL}${path}`, { method: 'POST', body: form, headers });
+  if (res.status === 401 && retry && tokenStore.refresh && (await tryRefresh())) return upload<T>(path, form, false);
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const body = await res.json();
+      message = Array.isArray(body.message) ? body.message.join(', ') : body.message ?? message;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, message);
+  }
+  return res.json() as Promise<T>;
+}
+
+/** Authenticated binary fetch → object URL (audio elements cannot send Authorization headers). */
+const blobCache = new Map<string, string>();
+export async function fetchBlobUrl(path: string): Promise<string> {
+  const cached = blobCache.get(path);
+  if (cached) return cached;
+  const headers: Record<string, string> = {};
+  if (tokenStore.access) headers.Authorization = `Bearer ${tokenStore.access}`;
+  let res = await fetch(`${API_URL}${path}`, { headers });
+  if (res.status === 401 && tokenStore.refresh && (await tryRefresh())) {
+    headers.Authorization = `Bearer ${tokenStore.access}`;
+    res = await fetch(`${API_URL}${path}`, { headers });
+  }
+  if (!res.ok) throw new ApiError(res.status, res.statusText);
+  const url = URL.createObjectURL(await res.blob());
+  blobCache.set(path, url);
+  return url;
+}
+
 export const api = {
+  upload,
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),

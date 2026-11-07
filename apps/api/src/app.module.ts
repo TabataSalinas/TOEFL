@@ -15,6 +15,11 @@ import { ReportsModule } from './reports/reports.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { TutorModule } from './tutor/tutor.module';
 import { HealthModule } from './health/health.module';
+import { StorageModule } from './storage/storage.service';
+import { RagModule } from './rag/rag.module';
+import { MediaModule } from './media/media.module';
+import { WritingModule } from './writing/writing.module';
+import { SpeakingModule } from './speaking/speaking.module';
 
 @Module({
   imports: [
@@ -22,7 +27,9 @@ import { HealthModule } from './health/health.module';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     PrismaModule,
     RedisModule,
+    StorageModule,
     AiModule,
+    RagModule,
     AuthModule,
     UsersModule,
     ExamsModule,
@@ -31,6 +38,9 @@ import { HealthModule } from './health/health.module';
     ReportsModule,
     DashboardModule,
     TutorModule,
+    MediaModule,
+    WritingModule,
+    SpeakingModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

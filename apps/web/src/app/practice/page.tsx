@@ -7,11 +7,11 @@ import { Card, Spinner } from '@/components/ui';
 import { api } from '@/lib/api';
 import { AttemptState, ExamKind, Section } from '@/lib/types';
 
-const SECTIONS: { key: Section; label: string; desc: string; icon: string }[] = [
-  { key: 'READING', label: 'Reading', desc: 'Academic passages & questions', icon: '📖' },
-  { key: 'LISTENING', label: 'Listening', desc: 'Lectures & conversations', icon: '🎧' },
-  { key: 'SPEAKING', label: 'Speaking', desc: 'Spoken responses (beta)', icon: '🎙️' },
-  { key: 'WRITING', label: 'Writing', desc: 'Typed essays (beta)', icon: '✍️' },
+const SECTIONS: { key: Section; label: string; desc: string; icon: string; time: string }[] = [
+  { key: 'READING', label: 'Reading', desc: 'Complete the Words · Read in Daily Life · Academic Passage — 2 adaptive modules (40 items)', icon: '📖', time: '≈ 28 min' },
+  { key: 'LISTENING', label: 'Listening', desc: 'Choose a Response · Conversations · Announcements · Academic Talks — audio plays once (≈ 36 items)', icon: '🎧', time: '≈ 27 min' },
+  { key: 'WRITING', label: 'Writing', desc: 'Build a Sentence (10) · Write an Email · Academic Discussion — AI-rated with rubric feedback', icon: '✍️', time: '≈ 23 min' },
+  { key: 'SPEAKING', label: 'Speaking', desc: 'Listen and Repeat (7) · Take an Interview (4) — recorded, transcribed and analysed', icon: '🎙️', time: '≈ 8 min' },
 ];
 
 export default function PracticePage() {
@@ -41,7 +41,7 @@ export default function PracticePage() {
     <AppShell>
       <h1 className="text-2xl font-bold">Practice</h1>
       <p className="muted">
-        Generate a fresh AI-authored simulation. Choose a full mock or a single section.
+        Every simulation follows the current (2026) TOEFL iBT format and is generated fresh, avoiding topics you saw recently.
       </p>
 
       <div className="mt-6 flex items-center gap-3">
@@ -67,9 +67,8 @@ export default function PracticePage() {
             <div>
               <h2 className="text-lg font-semibold">Full TOEFL simulation</h2>
               <p className="text-sm muted">
-                All four sections with realistic timing. Reading & Listening are
-                auto-graded; Speaking & Writing capture responses (grading in a
-                later release).
+                Reading → Listening → Writing → Speaking in the official order, with adaptive Reading/Listening
+                modules, server-side timers, microphone check and an estimated 0–120 score (≈ 1 h 30 min).
               </p>
             </div>
             <button
@@ -77,7 +76,7 @@ export default function PracticePage() {
               disabled={busy !== null}
               onClick={() => start('FULL')}
             >
-              {busy === 'FULL' ? <Spinner /> : 'Start full mock'}
+              {busy === 'FULL' ? <Spinner label="Generating…" /> : 'Start full mock'}
             </button>
           </div>
         </Card>
@@ -88,7 +87,7 @@ export default function PracticePage() {
               <div>
                 <h3 className="font-semibold">
                   <span className="mr-2">{s.icon}</span>
-                  {s.label}
+                  {s.label} <span className="ml-1 text-xs font-normal muted">{s.time}</span>
                 </h3>
                 <p className="text-sm muted">{s.desc}</p>
               </div>

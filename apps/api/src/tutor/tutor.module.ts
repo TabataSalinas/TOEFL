@@ -7,5 +7,6 @@ import { ReportsModule } from '../reports/reports.module';
   imports: [ReportsModule],
   controllers: [TutorController],
   providers: [TutorService],
+  exports: [TutorService],
 })
 export class TutorModule {}
