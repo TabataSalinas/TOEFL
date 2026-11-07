@@ -4,7 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AiService } from '../ai/ai.service';
 import { ReportsService } from '../reports/reports.service';
 
-interface SkillAccuracy {
+export interface SkillAccuracy {
   skillTag: string;
   section: Section;
   accuracy: number;
