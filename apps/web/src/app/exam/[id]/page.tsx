@@ -3,325 +3,216 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
-import {
-  AttemptState,
-  SectionPayload,
-  SectionState,
-  Section,
-} from '@/lib/types';
-import { ExamTimer } from '@/components/exam-timer';
-import { Card, Spinner, Badge } from '@/components/ui';
+import { AttemptState, Section, SectionPayload, SectionState } from '@/lib/types';
+import { Badge, Card, Spinner } from '@/components/ui';
+import { ReadingRunner } from '@/components/exam/reading-runner';
+import { ListeningRunner } from '@/components/exam/listening-runner';
+import { WritingRunner } from '@/components/exam/writing-runner';
+import { SpeakingRunner } from '@/components/exam/speaking-runner';
+import { SystemCheck } from '@/components/exam/system-check';
 
-type Phase = 'loading' | 'overview' | 'in-section' | 'done';
+type Phase = 'loading' | 'overview' | 'check' | 'running' | 'transition' | 'done';
 
-const SECTION_LABEL: Record<Section, string> = {
-  READING: 'Reading',
-  LISTENING: 'Listening',
-  SPEAKING: 'Speaking',
-  WRITING: 'Writing',
+const LABEL: Record<Section, string> = { READING: 'Reading', LISTENING: 'Listening', WRITING: 'Writing', SPEAKING: 'Speaking' };
+const BLURB: Record<Section, string> = {
+  READING: 'Complete the Words · Read in Daily Life · Read an Academic Passage (2 adaptive modules)',
+  LISTENING: 'Listen and Choose a Response · Conversations · Announcements · Academic Talks (2 adaptive modules, audio plays once)',
+  WRITING: 'Build a Sentence · Write an Email · Write for an Academic Discussion',
+  SPEAKING: 'Listen and Repeat · Take an Interview (recorded automatically)',
 };
 
 export default function ExamRunnerPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-
   const [phase, setPhase] = useState<Phase>('loading');
   const [attempt, setAttempt] = useState<AttemptState | null>(null);
-  const [section, setSection] = useState<SectionPayload | null>(null);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [text, setText] = useState<Record<string, string>>({});
+  const [payload, setPayload] = useState<SectionPayload | null>(null);
+  const [pendingSection, setPendingSection] = useState<Section | null>(null);
+  const [micChecked, setMicChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const savingRef = useRef(false);
+  const [countdown, setCountdown] = useState(5);
+  const finishing = useRef(false);
 
-  const loadAttempt = useCallback(async () => {
+  const load = useCallback(async () => {
     const data = await api.get<AttemptState>(`/attempts/${id}`);
     setAttempt(data);
-    if (data.status === 'COMPLETED' || data.status === 'ABANDONED') {
-      setPhase('done');
-    } else {
-      setPhase('overview');
-    }
+    setPhase(data.status === 'COMPLETED' || data.status === 'ABANDONED' ? 'done' : 'overview');
+    return data;
   }, [id]);
 
   useEffect(() => {
-    loadAttempt().catch((e) => setError((e as Error).message));
-  }, [loadAttempt]);
+    setMicChecked(sessionStorage.getItem('toefl_mic_ok') === '1');
+    load().catch((e) => setError((e as Error).message));
+  }, [load]);
 
-  const startSection = async (s: Section) => {
+  const begin = async (section: Section) => {
+    if (section === 'SPEAKING' && !micChecked) {
+      setPendingSection(section);
+      setPhase('check');
+      return;
+    }
+    await start(section);
+  };
+
+  const start = async (section: Section) => {
     setBusy(true);
     setError('');
     try {
-      const payload = await api.post<SectionPayload>(
-        `/attempts/${id}/sections/${s}/start`,
-        {},
-      );
-      setSection(payload);
-      setAnswers({});
-      setText({});
-      setPhase('in-section');
+      const p = await api.post<SectionPayload>(`/attempts/${id}/sections/${section}/start`, {});
+      finishing.current = false;
+      setPayload(p);
+      setPhase('running');
     } catch (e) {
       setError((e as Error).message);
+      setPhase('overview');
     } finally {
       setBusy(false);
     }
   };
 
-  const persistAnswers = useCallback(async () => {
-    if (!section || savingRef.current) return;
-    savingRef.current = true;
+  const finishModule = useCallback(async () => {
+    if (!payload || finishing.current) return;
+    finishing.current = true;
     try {
-      const objective = Object.entries(answers).map(([questionId, response]) => ({
-        questionId,
-        response,
-      }));
-      // Productive responses saved as text in the response field for now.
-      const productive = Object.entries(text).map(([questionId, response]) => ({
-        questionId,
-        response,
-      }));
-      const all = [...objective, ...productive];
-      if (all.length)
-        await api.post(`/attempts/${id}/sections/${section.section}/answers`, {
-          answers: all,
-        });
-    } catch {
-      /* answers resend on finish */
-    } finally {
-      savingRef.current = false;
-    }
-  }, [answers, text, section, id]);
-
-  // Autosave every 10s while in a section.
-  useEffect(() => {
-    if (phase !== 'in-section') return;
-    const t = setInterval(persistAnswers, 10_000);
-    return () => clearInterval(t);
-  }, [phase, persistAnswers]);
-
-  const finishSection = useCallback(async () => {
-    if (!section) return;
-    setBusy(true);
-    try {
-      await persistAnswers();
-      await api.post(`/attempts/${id}/sections/${section.section}/finish`, {});
-      setSection(null);
-      await loadAttempt();
+      const res = await api.post<AttemptState>(`/attempts/${id}/sections/${payload.section}/finish`, {});
+      setAttempt(res);
+      setPayload(null);
+      if (res.nextModule) {
+        setCountdown(5);
+        setPendingSection(payload.section);
+        setPhase('transition');
+      } else if (res.status === 'COMPLETED') {
+        setPhase('done');
+      } else {
+        setPhase('overview');
+      }
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setBusy(false);
+      finishing.current = false;
+      await load().catch(() => undefined);
     }
-  }, [section, persistAnswers, id, loadAttempt]);
+  }, [payload, id, load]);
 
-  if (phase === 'loading')
+  // Auto-continue to module 2 like the real test.
+  useEffect(() => {
+    if (phase !== 'transition' || !pendingSection) return;
+    if (countdown <= 0) {
+      void begin(pendingSection);
+      return;
+    }
+    const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, countdown, pendingSection]);
+
+  if (phase === 'loading') {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Spinner label="Preparing exam…" />
       </div>
     );
+  }
 
-  if (error && !section)
+  if (error && phase === 'overview' && !attempt) {
     return (
       <div className="mx-auto max-w-2xl p-8">
         <Card>
           <p className="text-red-500">{error}</p>
-          <button className="btn-ghost mt-4" onClick={() => router.push('/practice')}>
-            Back to practice
-          </button>
+          <button className="btn-ghost mt-4" onClick={() => router.push('/practice')}>Back to practice</button>
         </Card>
-      </div>
-    );
-
-  // ── Exam overview / section selection ──────────────────────────────
-  if (phase === 'overview' && attempt) {
-    const nextSection = attempt.sections.find(
-      (s) => s.status === 'NOT_STARTED' || s.status === 'IN_PROGRESS',
-    );
-    return (
-      <div className="mx-auto max-w-3xl p-6">
-        <h1 className="text-2xl font-bold">Exam in progress</h1>
-        <p className="muted">
-          Sections start one at a time. Once a section&apos;s timer starts, it cannot
-          be paused.
-        </p>
-        <div className="mt-6 space-y-3">
-          {attempt.sections.map((s) => (
-            <SectionRow
-              key={s.section}
-              s={s}
-              onStart={() => startSection(s.section)}
-              disabled={busy}
-            />
-          ))}
-        </div>
-        {!nextSection && (
-          <Card className="mt-6">
-            <p>All sections complete.</p>
-            <button
-              className="btn-primary mt-3"
-              onClick={() => router.push(`/report/${attempt.id}`)}
-            >
-              View results
-            </button>
-          </Card>
-        )}
       </div>
     );
   }
 
-  // ── Completed ──────────────────────────────────────────────────────
+  if (phase === 'running' && payload) {
+    const common = { payload, attemptId: id, onFinish: finishModule };
+    switch (payload.section) {
+      case 'READING': return <ReadingRunner key={payload.sectionAttemptId} {...common} />;
+      case 'LISTENING': return <ListeningRunner key={payload.sectionAttemptId} {...common} />;
+      case 'WRITING': return <WritingRunner key={payload.sectionAttemptId} {...common} />;
+      case 'SPEAKING': return <SpeakingRunner key={payload.sectionAttemptId} {...common} />;
+    }
+  }
+
+  if (phase === 'check') {
+    return (
+      <div className="mx-auto max-w-3xl p-6">
+        <SystemCheck
+          onDone={() => {
+            sessionStorage.setItem('toefl_mic_ok', '1');
+            setMicChecked(true);
+            if (pendingSection === 'SPEAKING') void start('SPEAKING');
+            else setPhase('overview');
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (phase === 'transition') {
+    return (
+      <div className="mx-auto max-w-xl p-8">
+        <Card className="text-center">
+          <h1 className="text-xl font-bold">Module 1 complete</h1>
+          <p className="mt-2 text-sm muted">
+            Your next module is selected based on how you performed. Module 2 starts automatically — you cannot return to Module 1.
+          </p>
+          <p className="mt-4 text-3xl font-bold tabular-nums" aria-live="polite">{countdown}</p>
+          <button className="btn-primary mt-4" onClick={() => pendingSection && void begin(pendingSection)}>Start Module 2 now</button>
+        </Card>
+      </div>
+    );
+  }
+
   if (phase === 'done' && attempt) {
     return (
       <div className="mx-auto max-w-2xl p-8">
         <Card>
           <h1 className="text-xl font-bold">Exam finished</h1>
-          <p className="muted mt-1">Your score report is ready.</p>
-          <button
-            className="btn-primary mt-4"
-            onClick={() => router.push(`/report/${attempt.id}`)}
-          >
-            View results
-          </button>
+          <p className="mt-1 text-sm muted">Your score report, feedback and study plan are ready.</p>
+          <button className="btn-primary mt-4" onClick={() => router.push(`/report/${attempt.id}`)}>View results</button>
         </Card>
       </div>
     );
   }
 
-  // ── In a section (exam mode) ───────────────────────────────────────
-  if (phase === 'in-section' && section) {
-    const isProductive =
-      section.section === 'SPEAKING' || section.section === 'WRITING';
-    return (
-      <div className="min-h-screen">
-        <div
-          className="sticky top-0 z-10 flex items-center justify-between border-b px-4 py-3 backdrop-blur"
-          style={{ borderColor: 'rgb(var(--border))', background: 'rgb(var(--background) / 0.9)' }}
-        >
-          <div>
-            <div className="font-semibold">{SECTION_LABEL[section.section]}</div>
-            <div className="text-xs muted">
-              {section.questions.length} item(s)
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <ExamTimer deadlineIso={section.deadlineAt} onExpire={finishSection} />
-            <button className="btn-primary" disabled={busy} onClick={finishSection}>
-              {busy ? 'Submitting…' : 'Finish section'}
-            </button>
-          </div>
-        </div>
-
-        <div className="mx-auto max-w-4xl px-4 py-6">
-          <p className="mb-4 rounded-xl bg-black/5 p-3 text-sm dark:bg-white/10">
-            {section.instructions}
-          </p>
-
-          {section.passages.map((p) => (
-            <Card key={p.id} className="mb-6">
-              <h2 className="font-semibold">{p.title}</h2>
-              {section.section === 'LISTENING' && (
-                <p className="mb-2 text-xs muted">
-                  🎧 Transcript shown here for practice. Audio narration is
-                  synthesized in a later release.
-                </p>
-              )}
-              <p className="mt-2 whitespace-pre-wrap leading-relaxed">{p.body}</p>
-            </Card>
-          ))}
-
-          <div className="space-y-5">
-            {section.questions.map((q, idx) => (
-              <Card key={q.id}>
-                <div className="mb-2 flex items-center gap-2">
-                  <Badge>Q{idx + 1}</Badge>
-                  <span className="text-xs muted">{q.type.replace(/_/g, ' ')}</span>
-                </div>
-                <p className="font-medium">{q.prompt}</p>
-
-                {isProductive ? (
-                  <textarea
-                    className="input mt-3 min-h-[160px]"
-                    placeholder={
-                      section.section === 'WRITING'
-                        ? 'Type your response…'
-                        : 'Speaking recording is captured in a later release — you may draft notes here.'
-                    }
-                    value={text[q.id] ?? ''}
-                    onChange={(e) =>
-                      setText((prev) => ({ ...prev, [q.id]: e.target.value }))
-                    }
-                  />
-                ) : (
-                  <div className="mt-3 space-y-2">
-                    {(q.options ?? []).map((opt) => {
-                      const selected = answers[q.id] === opt.id;
-                      return (
-                        <label
-                          key={opt.id}
-                          className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm ${
-                            selected ? 'border-brand-500 bg-brand-500/10' : ''
-                          }`}
-                          style={!selected ? { borderColor: 'rgb(var(--border))' } : {}}
-                        >
-                          <input
-                            type="radio"
-                            name={q.id}
-                            checked={selected}
-                            onChange={() =>
-                              setAnswers((prev) => ({ ...prev, [q.id]: opt.id }))
-                            }
-                            className="mt-0.5"
-                          />
-                          <span>
-                            <strong className="mr-1">{opt.id}.</strong>
-                            {opt.text}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-              </Card>
-            ))}
-          </div>
-
-          <div className="mt-6 flex justify-end">
-            <button className="btn-primary" disabled={busy} onClick={finishSection}>
-              {busy ? 'Submitting…' : 'Finish section'}
-            </button>
-          </div>
-        </div>
+  // ── Overview ──
+  const full = attempt?.kind === 'FULL';
+  const firstOpen = attempt?.sections.findIndex((s) => s.status === 'NOT_STARTED' || s.status === 'IN_PROGRESS') ?? -1;
+  return (
+    <div className="mx-auto max-w-3xl p-6">
+      <h1 className="text-2xl font-bold">Exam in progress</h1>
+      <p className="muted">
+        Sections follow the official order. A module&apos;s clock cannot be paused, and finished modules cannot be revisited.
+      </p>
+      {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
+      <div className="mt-6 space-y-3">
+        {attempt?.sections.map((s, i) => (
+          <SectionRow key={s.section} s={s} blurb={BLURB[s.section]} disabled={busy || (full && i !== firstOpen)} onStart={() => void begin(s.section)} />
+        ))}
       </div>
-    );
-  }
-
-  return null;
+      {!micChecked && attempt?.sections.some((s) => s.section === 'SPEAKING') && (
+        <Card className="mt-6">
+          <p className="text-sm">Speaking needs your microphone. Run the equipment check now so nothing interrupts the exam.</p>
+          <button className="btn-ghost mt-3" onClick={() => { setPendingSection(null); setPhase('check'); }}>Run equipment check</button>
+        </Card>
+      )}
+    </div>
+  );
 }
 
-function SectionRow({
-  s,
-  onStart,
-  disabled,
-}: {
-  s: SectionState;
-  onStart: () => void;
-  disabled: boolean;
-}) {
-  const label = SECTION_LABEL[s.section];
+function SectionRow({ s, blurb, disabled, onStart }: { s: SectionState; blurb: string; disabled: boolean; onStart: () => void }) {
   const done = s.status === 'COMPLETED' || s.status === 'EXPIRED';
   return (
     <Card>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div>
-          <div className="font-medium">{label}</div>
-          <div className="text-xs muted">
-            {done
-              ? `${s.status} · ${Math.round(s.timeSpentSec / 60)} min`
-              : s.status === 'IN_PROGRESS'
-                ? 'Resume in progress'
-                : 'Not started'}
+          <div className="font-medium">
+            {LABEL[s.section]}
+            {s.moduleCount > 1 && !done && <span className="ml-2 text-xs muted">Module {s.module} of {s.moduleCount}</span>}
           </div>
+          <div className="text-xs muted">{done ? `${s.status === 'EXPIRED' ? 'Time expired' : 'Completed'} · ${Math.round(s.timeSpentSec / 60)} min` : blurb}</div>
         </div>
         {done ? (
           <Badge tone={s.status === 'EXPIRED' ? 'warn' : 'good'}>{s.status}</Badge>

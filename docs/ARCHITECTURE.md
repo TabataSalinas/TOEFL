@@ -26,43 +26,36 @@ complejidad de microservicios.
 
 ## Backend (NestJS)
 
-Cada dominio es un módulo Nest independiente con su `Controller` + `Service`:
+Cada dominio es un módulo Nest con su `Controller` + `Service`:
 
-| Módulo      | Responsabilidad |
-|-------------|-----------------|
-| `auth`      | Registro, login, refresh con rotación, reset de contraseña. JWT global. |
-| `users`     | Perfil, metas (semanal/mensual), preferencias, racha. |
-| `ai`        | Abstracción de proveedor: `OpenAiProvider` + `MockAiProvider` con fallback automático. |
-| `exams`     | Generación de simulacros (full o por sección) y persistencia del blueprint. |
-| `attempts`  | **Modo examen**: temporizador autoritativo en servidor, entrega de preguntas sin respuestas, guardado, finalización y expiración de secciones. |
-| `scoring`   | Calificación automática objetiva, score escalado 0–30, total 0–120, banda 1–6, confianza y explicación. |
-| `reports`   | Reporte detallado por intento (revela respuestas tras completar), progreso y precisión por skill. |
-| `dashboard` | Racha, metas, tiempo total, readiness, progreso a objetivo. |
-| `tutor`     | Coach: análisis de debilidades, resumen, plan de estudio adaptativo con ganancia estimada de puntos. |
-| `health`    | Healthcheck (DB + proveedor IA). |
+| Módulo | Responsabilidad |
+|--------|-----------------|
+| `auth`, `users` | JWT (access + refresh con rotación), perfil, metas, racha |
+| `ai` | Fachada de IA: generación de ítems (OpenAI con **fallback** al banco offline), evaluación JSON, embeddings, STT, TTS |
+| `content` | Código **puro** sin dependencias: taxonomía de temas, banco original, *C-test*, *Build a Sentence*, validación de calidad, utilidades de texto |
+| `sources` | Fundamentación en fuentes abiertas (Wikipedia) con licencia y URL |
+| `exams` | `ExamBuilderService`: genera cada módulo (tareas en paralelo), valida, rebalancea claves, evita repeticiones y persiste |
+| `attempts` | **Modo examen**: temporizador de servidor, orden oficial, módulos adaptativos, bloqueo de respuestas, expiración automática |
+| `scoring` | Calificación por tipo de tarea, puntaje adaptativo, total 0–120, banda 1–6, confianza y metodología |
+| `writing` | Evaluación con rúbrica + RAG (varias muestras, mediana, anti-alucinación) y heurística de respaldo |
+| `speaking` | Subida de audio, STT, métricas de habla, alineación *Listen and Repeat*, evaluación *Interview*, revisión de grabaciones |
+| `rag` | Base de conocimiento (rúbricas, ejemplos calificados, guías), recuperación híbrida BM25 + embeddings (RRF) |
+| `media`, `storage` | TTS con caché en disco; almacenamiento de grabaciones |
+| `reports`, `dashboard`, `tutor` | Reportes por módulo, analítica, coach con plan automático |
 
-### Principios de integridad del examen
+### Integridad del examen
+- El **reloj es del servidor** (`deadlineAt` por módulo); un cierre automático califica los módulos vencidos aunque el cliente desaparezca.
+- `serve.ts` es la única puerta de salida de contenido durante el examen: sin claves, sin explicaciones, sin texto de Listening.
+- Respuestas bloqueables (`locked`) y validación de que cada pregunta pertenece al módulo del intento.
+- El reporte y las claves solo existen tras terminar el intento.
 
-- El **temporizador vive en el servidor**: cada `SectionAttempt` guarda
-  `startedAt` y `deadlineAt`. El cliente solo muestra la cuenta regresiva.
-- Las preguntas se sirven **sin** `correctAnswer` ni `explanation` mientras el
-  examen está en curso (`AttemptsService.serveQuestions`).
-- Las respuestas enviadas **después del `deadlineAt`** se rechazan y la sección
-  se marca `EXPIRED`.
-- Las respuestas correctas y explicaciones solo se exponen vía `ReportsService`
-  cuando el intento está `COMPLETED`.
+### Capa de IA
+`AiService` usa OpenAI si hay clave; **cualquier fallo** cae al `BankProvider` (banco original + generadores por código).
+Evaluación y STT/TTS devuelven `null` sin LLM y los llamadores activan heurísticas deterministas (con confianza baja).
 
-### Capa de IA (proveedor intercambiable)
-
-`AiService` resuelve el proveedor en tiempo de ejecución:
-
-1. `AI_PROVIDER=openai` + `OPENAI_API_KEY` presente → **OpenAI**, con *fallback*
-   automático a mock ante cualquier error.
-2. En cualquier otro caso → **MockAiProvider** determinista (genera contenido
-   original offline). Esto garantiza que la plataforma funcione sin clave ni red.
-
-El contrato `AiProvider` (`ai.types.ts`) permite añadir otros proveedores
-(Anthropic, Azure OpenAI, local) sin tocar el resto del sistema.
+### RAG para consistencia
+Rúbrica de la tarea siempre inyectada → anclas recuperadas por similitud → N muestras con temperatura baja → mediana por dimensión → citas devueltas al usuario.
+Detalle en [`SCORING.md`](SCORING.md).
 
 ## Frontend (Next.js)
 
@@ -76,18 +69,15 @@ El contrato `AiProvider` (`ai.types.ts`) permite añadir otros proveedores
 ## Flujo de un simulacro
 
 ```
-POST /exams/generate ──► crea Exam + Sections + Passages + Questions (IA)
-POST /attempts        ──► crea ExamAttempt + SectionAttempts (NOT_STARTED)
-POST /attempts/:id/sections/:section/start  ──► fija deadline, sirve preguntas
-POST .../answers       ──► guarda respuestas (rechaza tras deadline)
-POST .../finish        ──► califica (objetivo), registra sesión de estudio
-   └─ al completar todas ──► ScoringService.buildScoreReport (total + confianza)
-GET  /reports/attempts/:id ──► reporte con explicaciones y respuestas correctas
-GET  /tutor/analysis, POST /tutor/plan ──► coaching + plan adaptativo
+POST /exams/generate ──► Exam + módulo 1 de cada sección (tareas generadas en paralelo y validadas)
+POST /attempts        ──► ExamAttempt + un SectionAttempt por módulo 1
+POST .../sections/R/start    ──► deadline del módulo, contenido sin claves
+POST .../answers · .../speaking/recordings ──► respuestas (bloqueables) / audio → STT → análisis
+POST .../finish       ──► califica; R/L: enruta y construye el módulo 2 (fácil|difícil)
+   └─ al cerrar todos ──► buildScoreReport (total, banda, confianza) + el coach regenera el plan
+GET  /reports/attempts/:id ──► reporte completo (solo con el intento terminado)
 ```
 
 ## Fases
 
-Ver [`ROADMAP.md`](ROADMAP.md). El esquema de datos ya contempla Speaking,
-Writing y RAG (`Recording`, `Essay`, `KnowledgeChunk`) para evolucionar sin
-migraciones disruptivas.
+Ver [`ROADMAP.md`](ROADMAP.md) y [`FORMAT_2026.md`](FORMAT_2026.md).

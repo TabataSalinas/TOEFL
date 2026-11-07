@@ -21,7 +21,7 @@ COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/apps/api/dist ./dist
 COPY --from=build /app/apps/api/prisma ./prisma
 COPY apps/api/package.json ./package.json
+COPY apps/api/docker-entrypoint.sh ./docker-entrypoint.sh
 
 EXPOSE 4000
-# Apply migrations then start. (Migrations are created on first `prisma migrate`.)
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main.js"]
+CMD ["sh", "./docker-entrypoint.sh"]
