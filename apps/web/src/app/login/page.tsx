@@ -70,6 +70,10 @@ export default function LoginPage() {
             <Link href="/register" className="text-brand-500 hover:underline">
               Create one
             </Link>
+            {' · '}
+            <Link href="/forgot-password" className="text-brand-500 hover:underline">
+              Forgot password?
+            </Link>
           </p>
           <p className="mt-2 text-xs muted">
             Demo seed account: demo@toefl.local / DemoPass123!

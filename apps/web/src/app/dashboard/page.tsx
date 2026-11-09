@@ -6,9 +6,24 @@ import { AppShell } from '@/components/app-shell';
 import { Card, Stat, Progress, Badge, Spinner } from '@/components/ui';
 import { api } from '@/lib/api';
 import { Dashboard } from '@/lib/types';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+
+interface ProgressData {
+  trend: string;
+  timeline: { date: string; total: number }[];
+}
+interface SkillRow {
+  skillTag: string;
+  section: string;
+  accuracy: number;
+  total: number;
+  source: 'items' | 'rubric';
+}
 
 export default function DashboardPage() {
   const [data, setData] = useState<Dashboard | null>(null);
+  const [progress, setProgress] = useState<ProgressData | null>(null);
+  const [skills, setSkills] = useState<SkillRow[]>([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -16,7 +31,12 @@ export default function DashboardPage() {
       .get<Dashboard>('/dashboard')
       .then(setData)
       .catch((e) => setError((e as Error).message));
+    api.get<ProgressData>('/reports/progress').then(setProgress).catch(() => undefined);
+    api.get<SkillRow[]>('/reports/skills').then(setSkills).catch(() => undefined);
   }, []);
+
+  const weakest = skills.filter((s) => s.total >= 2 || s.source === 'rubric').slice(0, 5);
+  const chart = (progress?.timeline ?? []).map((t, i) => ({ name: `#${i + 1}`, score: t.total }));
 
   return (
     <AppShell>
@@ -121,6 +141,55 @@ export default function DashboardPage() {
               ) : (
                 <p className="mt-2 text-sm muted">No monthly goal set.</p>
               )}
+            </Card>
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-3">
+            <Card className="lg:col-span-2">
+              <div className="flex items-center justify-between">
+                <h2 className="font-semibold">Score evolution</h2>
+                {progress && <Badge tone={progress.trend === 'improving' ? 'good' : progress.trend === 'declining' ? 'bad' : 'default'}>{progress.trend}</Badge>}
+              </div>
+              {chart.length > 1 ? (
+                <div className="mt-4" style={{ width: '100%', height: 220 }}>
+                  <ResponsiveContainer>
+                    <LineChart data={chart}>
+                      <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                      <XAxis dataKey="name" />
+                      <YAxis domain={[0, 120]} />
+                      <Tooltip />
+                      <Line type="monotone" dataKey="score" stroke="#3b63f6" strokeWidth={2} dot={{ r: 3 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <p className="mt-2 text-sm muted">Complete at least two mocks to see your trend.</p>
+              )}
+            </Card>
+            <Card>
+              <h2 className="font-semibold">Areas to improve</h2>
+              {weakest.length === 0 ? (
+                <p className="mt-2 text-sm muted">Not enough data yet.</p>
+              ) : (
+                <ul className="mt-3 space-y-3">
+                  {weakest.map((w) => (
+                    <li key={`${w.section}-${w.skillTag}`}>
+                      <div className="flex justify-between text-sm">
+                        <span>
+                          {w.skillTag.replace(/[-_:]/g, ' ')} <span className="muted">({w.section.toLowerCase()})</span>
+                        </span>
+                        <span className="muted">{Math.round(w.accuracy * 100)}%</span>
+                      </div>
+                      <div className="mt-1">
+                        <Progress percent={w.accuracy * 100} />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <Link href="/tutor" className="mt-4 inline-block text-sm text-brand-500 hover:underline">
+                Open study plan →
+              </Link>
             </Card>
           </div>
 
