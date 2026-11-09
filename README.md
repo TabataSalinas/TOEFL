@@ -50,6 +50,8 @@ Sin Docker (desarrollo local): consulta [`docs/INSTALLATION.md`](docs/INSTALLATI
 - [Arquitectura](docs/ARCHITECTURE.md)
 - [Modelo de base de datos](docs/DATABASE.md)
 - [API REST](docs/API.md)
+- [Reproducir desde cero](docs/REPRODUCE.md)
+- [Cobertura de requisitos](docs/REQUIREMENTS_COVERAGE.md)
 - [Instalación](docs/INSTALLATION.md)
 - [Despliegue](docs/DEPLOYMENT.md)
 - [Formato TOEFL 2026](docs/FORMAT_2026.md)
