@@ -24,4 +24,4 @@ COPY apps/api/package.json ./package.json
 COPY apps/api/docker-entrypoint.sh ./docker-entrypoint.sh
 
 EXPOSE 4000
-CMD ["sh", "./docker-entrypoint.sh"]
+CMD ["node", "dist/src/main.js"]

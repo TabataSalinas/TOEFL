@@ -15,7 +15,7 @@ import { ReportsModule } from './reports/reports.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { TutorModule } from './tutor/tutor.module';
 import { HealthModule } from './health/health.module';
-import { StorageModule } from './storage/storage.service';
+import { StorageModule } from './storage/storage.module';
 import { RagModule } from './rag/rag.module';
 import { MediaModule } from './media/media.module';
 import { WritingModule } from './writing/writing.module';

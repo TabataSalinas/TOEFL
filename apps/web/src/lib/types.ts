@@ -11,7 +11,7 @@ export interface Option {
   text: string;
 }
 
-export type Meta = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+export type Meta = Record<string, any>;
 
 export interface Question {
   id: string;
