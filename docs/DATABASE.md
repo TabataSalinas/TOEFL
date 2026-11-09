@@ -79,3 +79,20 @@ npx prisma db seed   # usuario demo + examen de ejemplo
 
 En producción/Docker se aplica con `prisma migrate deploy` (incluido en el
 `CMD` del contenedor API).
+
+## Cambios de la Fase 2
+
+- `QuestionType`: +10 tipos del formato 2026 (`READING_COMPLETE_WORDS`, `LISTENING_CHOOSE_RESPONSE`, `WRITING_BUILD_SENTENCE`, `WRITING_EMAIL`,
+  `SPEAKING_LISTEN_REPEAT`, `SPEAKING_INTERVIEW`, …).
+- `ExamSection`: `module` (1/2) y `variant` (`core|easy|hard`) para el enrutamiento adaptativo.
+- `SectionAttempt`: `examSectionId` y `module` (un intento por módulo).
+- `Passage`: `kind`, `meta` (cabeceras de email, turnos de diálogo, publicaciones de la discusión…), `bankId`, `sourceRefs` (atribución), `contentFingerprint`.
+- `Question`: `taskKind`, `meta` (piezas de *Build a Sentence*, prefijo de *Complete the Words*, audio), `timeLimitSec`.
+- `Answer`: `locked`.
+- `Recording`: `transcriptSource`, `mimeType`, `analysis`, `score`. `Essay`: `taskType`, `score`.
+- `ScoreReport`: `sectionSummary` (módulos, ruta, puntaje, banda, confianza por sección).
+- `KnowledgeChunk`: `taskType`, `tags`, `contentHash` (único) + `embedding` — base del RAG.
+- Nuevo `SourceDocument`: extractos de fuentes abiertas con licencia y URL.
+
+> Aún no hay carpeta `prisma/migrations`. En desarrollo usa `prisma db push` (el contenedor lo hace solo si no hay migraciones).
+> Cuando quieras versionar el esquema: `npx prisma migrate dev --name init` y commitea `prisma/migrations/`.

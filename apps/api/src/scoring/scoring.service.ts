@@ -1,21 +1,43 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma, Section } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { scaledToBand, totalToBand } from '../common/toefl.constants';
 import {
-  isAnswerCorrect,
-  rawToScaled,
-  sectionConfidence,
-} from './scoring.util';
+  SectionName,
+  combineAdaptive,
+  moduleCount,
+  scaledToBand,
+  totalToBand,
+} from '../common/toefl.constants';
+import { accumulate, gradeResponse, rawToScaled, sectionConfidence, toBreakdown } from './scoring.util';
+
+export interface ModuleGrade {
+  correct: number;
+  total: number;
+  accuracy: number;
+  scaled: number;
+  skillBreakdown: Record<string, { correct: number; total: number; accuracy: number }>;
+}
+
+export interface SectionSummary {
+  scaled: number;
+  band: number;
+  confidence: number;
+  path: 'core' | 'easy' | 'hard' | null;
+  modules: Array<{ module: number; variant: string; correct: number; total: number; accuracy: number }>;
+  graded: boolean;
+}
+
+const json = (v: unknown) => v as unknown as Prisma.InputJsonValue;
 
 /**
- * Automatic grading + TOEFL score estimation.
+ * Automatic grading and score estimation.
  *
- * Objective sections (Reading/Listening) are graded by comparing the saved
- * response against the stored correct answer. Raw correct counts are mapped to
- * a 0..30 scaled score, then to a 0..120 total and a 1..6 band. A confidence
- * value reflects how much evidence (answered items, sections completed) the
- * estimate is based on.
+ *  - Objective items are graded per module (C-test, Build a Sentence and multiple choice).
+ *  - Reading/Listening combine both modules; the module-2 difficulty path (easy/hard)
+ *    determines the reachable range (see combineAdaptive).
+ *  - Writing/Speaking sections are scored by their evaluators and saved here.
+ *  - The total (0–120) is the sum of four 0–30 section scores; the 1–6 band is derived.
+ * All mappings are internal approximations for study feedback, not ETS equating.
  */
 @Injectable()
 export class ScoringService {
@@ -23,119 +45,101 @@ export class ScoringService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Grade a completed objective section and persist per-answer correctness. */
-  async gradeObjectiveSection(sectionAttemptId: string) {
-    const sectionAttempt = await this.prisma.sectionAttempt.findUnique({
+  /** Grade every objective question (points > 0) of a module attempt. */
+  async gradeModule(sectionAttemptId: string): Promise<ModuleGrade> {
+    const sa = await this.prisma.sectionAttempt.findUnique({
       where: { id: sectionAttemptId },
-      include: { answers: { include: { question: true } } },
+      include: { answers: true },
     });
-    if (!sectionAttempt) return;
+    if (!sa || !sa.examSectionId) throw new Error('Section attempt not found');
 
+    const questions = await this.prisma.question.findMany({
+      where: { examSectionId: sa.examSectionId, points: { gt: 0 } },
+      orderBy: { order: 'asc' },
+    });
+    const bySkill = new Map<string, { correct: number; total: number }>();
+    const byTask = new Map<string, { correct: number; total: number }>();
+    const answers = new Map(sa.answers.map((a) => [a.questionId, a]));
     let correct = 0;
-    let total = 0;
-    const skillStats = new Map<string, { correct: number; total: number }>();
 
-    // Find the exam section for this attempt so we grade every question
-    // (unanswered questions count as incorrect).
-    const examSection = await this.prisma.examSection.findFirst({
-      where: {
-        section: sectionAttempt.section,
-        exam: {
-          attempts: {
-            some: { sectionAttempts: { some: { id: sectionAttemptId } } },
-          },
+    for (const q of questions) {
+      const a = answers.get(q.id);
+      const ok = a ? gradeResponse(q.type, a.response, q.correctAnswer) : false;
+      if (ok) correct++;
+      accumulate(bySkill, q.skillTag ?? 'general', ok);
+      accumulate(byTask, `task:${q.taskKind ?? q.type}`, ok);
+      await this.prisma.answer.upsert({
+        where: { sectionAttemptId_questionId: { sectionAttemptId, questionId: q.id } },
+        create: {
+          sectionAttemptId,
+          questionId: q.id,
+          response: a?.response == null ? Prisma.JsonNull : json(a.response),
+          isCorrect: ok,
+          pointsEarned: ok ? q.points : 0,
+          locked: true,
         },
-      },
-      include: { questions: true },
-    });
-    const sectionQuestions = examSection?.questions ?? [];
-
-    const answerByQuestion = new Map(
-      sectionAttempt.answers.map((a) => [a.questionId, a]),
-    );
-
-    for (const q of sectionQuestions) {
-      if (q.points <= 0) continue; // skip productive tasks
-      total += 1;
-      const skill = q.skillTag ?? 'general';
-      const stat = skillStats.get(skill) ?? { correct: 0, total: 0 };
-      stat.total += 1;
-
-      const answer = answerByQuestion.get(q.id);
-      const isCorrect = answer
-        ? isAnswerCorrect(answer.response, q.correctAnswer)
-        : false;
-
-      if (answer) {
-        await this.prisma.answer.update({
-          where: { id: answer.id },
-          data: {
-            isCorrect,
-            pointsEarned: isCorrect ? q.points : 0,
-          },
-        });
-      }
-      if (isCorrect) {
-        correct += 1;
-        stat.correct += 1;
-      }
-      skillStats.set(skill, stat);
+        update: { isCorrect: ok, pointsEarned: ok ? q.points : 0, locked: true },
+      });
     }
 
+    const total = questions.length;
     const scaled = rawToScaled(correct, total);
-    const band = scaledToBand(scaled);
-    const confidence = sectionConfidence(total);
+    const skillBreakdown = { ...toBreakdown(bySkill), ...toBreakdown(byTask) };
+    await this.saveSectionScore(sectionAttemptId, {
+      rawCorrect: correct,
+      rawTotal: total,
+      scaledScore: scaled,
+      confidence: sectionConfidence(total),
+      skillBreakdown,
+    });
+    return { correct, total, accuracy: total ? correct / total : 0, scaled, skillBreakdown };
+  }
 
-    const skillBreakdown = Object.fromEntries(
-      [...skillStats.entries()].map(([skill, s]) => [
-        skill,
-        { correct: s.correct, total: s.total, accuracy: s.total ? s.correct / s.total : 0 },
-      ]),
-    );
-
+  /** Persist a module/section score (used by Reading/Listening and by the evaluators). */
+  async saveSectionScore(
+    sectionAttemptId: string,
+    data: {
+      rawCorrect: number;
+      rawTotal: number;
+      scaledScore: number;
+      confidence: number;
+      skillBreakdown: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    const sa = await this.prisma.sectionAttempt.findUnique({ where: { id: sectionAttemptId } });
+    if (!sa) throw new Error('Section attempt not found');
+    const fields = {
+      rawCorrect: data.rawCorrect,
+      rawTotal: data.rawTotal,
+      scaledScore: data.scaledScore,
+      band: scaledToBand(data.scaledScore),
+      confidence: data.confidence,
+      skillBreakdown: json(data.skillBreakdown),
+    };
     await this.prisma.sectionScore.upsert({
       where: { sectionAttemptId },
       create: {
-        // scoreReportId filled when buildScoreReport runs; temporary placeholder
         scoreReport: {
           connectOrCreate: {
-            where: { examAttemptId: sectionAttempt.examAttemptId },
-            create: {
-              examAttemptId: sectionAttempt.examAttemptId,
-              totalScore: 0,
-              confidence: 0,
-            },
+            where: { examAttemptId: sa.examAttemptId },
+            create: { examAttemptId: sa.examAttemptId, totalScore: 0, confidence: 0 },
           },
         },
         sectionAttempt: { connect: { id: sectionAttemptId } },
-        section: sectionAttempt.section,
-        rawCorrect: correct,
-        rawTotal: total,
-        scaledScore: scaled,
-        band,
-        confidence,
-        skillBreakdown: skillBreakdown as unknown as Prisma.InputJsonValue,
+        section: sa.section,
+        ...fields,
       },
-      update: {
-        rawCorrect: correct,
-        rawTotal: total,
-        scaledScore: scaled,
-        band,
-        confidence,
-        skillBreakdown: skillBreakdown as unknown as Prisma.InputJsonValue,
-      },
+      update: fields,
     });
-
-    return { correct, total, scaled, band, confidence };
   }
 
-  /** Assemble the overall score report once all sections are complete. */
+  /** Assemble the overall report once every section is complete. */
   async buildScoreReport(examAttemptId: string) {
     const attempt = await this.prisma.examAttempt.findUnique({
       where: { id: examAttemptId },
       include: { sectionAttempts: { include: { sectionScore: true } } },
     });
-    if (!attempt) return;
+    if (!attempt) return null;
 
     const report = await this.prisma.scoreReport.upsert({
       where: { examAttemptId },
@@ -143,62 +147,74 @@ export class ScoringService {
       update: {},
     });
 
-    // Collect section scaled scores (0..30). Missing/ungraded -> estimate 0.
-    const bySection = new Map<Section, number>();
-    const confidences: number[] = [];
-    let gradedSections = 0;
+    const examSectionIds = attempt.sectionAttempts.map((s) => s.examSectionId).filter((x): x is string => !!x);
+    const examSections = await this.prisma.examSection.findMany({ where: { id: { in: examSectionIds } } });
+    const variantOf = new Map(examSections.map((e) => [e.id, e.variant]));
 
-    for (const sa of attempt.sectionAttempts) {
-      const score = sa.sectionScore;
-      if (score) {
-        // Link section score to this report.
-        await this.prisma.sectionScore.update({
-          where: { sectionAttemptId: sa.id },
-          data: { scoreReportId: report.id },
-        });
-        bySection.set(sa.section, score.scaledScore);
-        confidences.push(score.confidence);
-        if (score.rawTotal > 0) gradedSections += 1;
+    const sections = [...new Set(attempt.sectionAttempts.map((s) => s.section))] as SectionName[];
+    const summary: Partial<Record<SectionName, SectionSummary>> = {};
+
+    for (const section of sections) {
+      const mods = attempt.sectionAttempts.filter((s) => s.section === section).sort((a, b) => a.module - b.module);
+      const modInfo = mods.map((m) => ({
+        module: m.module,
+        variant: (m.examSectionId && variantOf.get(m.examSectionId)) || 'core',
+        correct: m.sectionScore?.rawCorrect ?? 0,
+        total: m.sectionScore?.rawTotal ?? 0,
+        accuracy: m.sectionScore && m.sectionScore.rawTotal ? m.sectionScore.rawCorrect / m.sectionScore.rawTotal : 0,
+        confidence: m.sectionScore?.confidence ?? 0,
+        hasScore: !!m.sectionScore,
+        scaled: m.sectionScore?.scaledScore ?? 0,
+      }));
+
+      let scaled = 0;
+      let confidence = 0;
+      let path: SectionSummary['path'] = null;
+      const graded = modInfo.some((m) => m.hasScore);
+
+      if (section === 'READING' || section === 'LISTENING') {
+        const m1 = modInfo.find((m) => m.module === 1);
+        const m2 = modInfo.find((m) => m.module === 2);
+        if (m1) {
+          scaled = combineAdaptive(m1.accuracy, m2 && m2.hasScore ? m2.accuracy : null, m2 ? (m2.variant as 'easy' | 'hard') : null);
+          path = m2 ? (m2.variant as 'easy' | 'hard') : 'core';
+          const base = [m1, m2].filter((m) => m && m.hasScore).map((m) => m!.confidence);
+          const completeness = base.length / moduleCount(section);
+          confidence = base.length ? (base.reduce((a, b) => a + b, 0) / base.length) * (0.7 + 0.3 * completeness) : 0;
+        }
+      } else if (modInfo[0]) {
+        scaled = modInfo[0].scaled;
+        confidence = modInfo[0].confidence;
       }
+      summary[section] = {
+        scaled,
+        band: scaledToBand(scaled),
+        confidence: Math.round(confidence * 100) / 100,
+        path,
+        modules: modInfo.map(({ module, variant, correct, total, accuracy }) => ({ module, variant, correct, total, accuracy })),
+        graded,
+      };
     }
 
-    // For sections not yet graded (Speaking/Writing in phase 1), estimate using
-    // the average of graded sections so the total remains meaningful.
-    const gradedValues = [...bySection.values()];
-    const avg = gradedValues.length
-      ? Math.round(gradedValues.reduce((a, b) => a + b, 0) / gradedValues.length)
-      : 0;
-
-    const sections: Section[] = ['READING', 'LISTENING', 'SPEAKING', 'WRITING'];
-    const relevantSections =
-      attempt.kind === 'FULL'
-        ? sections
-        : attempt.sectionAttempts.map((s) => s.section);
-
-    let total = 0;
-    for (const s of relevantSections) {
-      total += bySection.has(s) ? bySection.get(s)! : avg;
-    }
-    // For single-section attempts, scale the section to a 0..120 projection.
-    if (attempt.kind === 'SECTION') {
-      total = Math.round((total / 30) * 120);
+    const isFull = attempt.kind === 'FULL';
+    const values = Object.values(summary) as SectionSummary[];
+    let total: number;
+    if (isFull) {
+      const gradedVals = values.filter((v) => v.graded).map((v) => v.scaled);
+      const avg = gradedVals.length ? gradedVals.reduce((a, b) => a + b, 0) / gradedVals.length : 0;
+      total = (['READING', 'LISTENING', 'WRITING', 'SPEAKING'] as SectionName[]).reduce((sum, s) => {
+        const v = summary[s];
+        return sum + (v && v.graded ? v.scaled : Math.round(avg));
+      }, 0);
+    } else {
+      total = Math.round(((values[0]?.scaled ?? 0) / 30) * 120);
     }
     total = Math.max(0, Math.min(120, total));
 
-    const confidence = this.totalConfidence(
-      gradedSections,
-      relevantSections.length,
-      attempt.kind === 'FULL',
-    );
-
-    const methodology = this.explainMethodology(
-      bySection,
-      avg,
-      total,
-      relevantSections,
-      attempt.kind,
-      confidence,
-    );
+    const coverage = isFull ? values.filter((v) => v.graded).length / 4 : 1;
+    const meanConf = values.length ? values.reduce((a, v) => a + v.confidence, 0) / values.length : 0;
+    const confidence = Math.round(Math.max(0.05, Math.min(0.95, meanConf * coverage * (isFull ? 1 : 0.75))) * 100) / 100;
+    const methodology = this.explain(summary, total, isFull, confidence);
 
     await this.prisma.scoreReport.update({
       where: { id: report.id },
@@ -207,62 +223,36 @@ export class ScoringService {
         totalBand: totalToBand(total),
         confidence,
         methodology,
+        sectionSummary: json(summary),
       },
     });
-
     return this.getReport(examAttemptId);
   }
 
   async getReport(examAttemptId: string) {
-    return this.prisma.scoreReport.findUnique({
-      where: { examAttemptId },
-      include: { sectionScores: true },
-    });
+    return this.prisma.scoreReport.findUnique({ where: { examAttemptId }, include: { sectionScores: true } });
   }
 
-  // ── scoring math ──────────────────────────────────────────────────────
-
-  private totalConfidence(
-    gradedSections: number,
-    relevantSections: number,
-    isFull: boolean,
-  ): number {
-    if (relevantSections === 0) return 0;
-    const coverage = gradedSections / relevantSections;
-    // Full exams with all objective sections graded are most reliable.
-    const base = coverage * (isFull ? 0.85 : 0.7);
-    return Math.round(Math.max(0.1, Math.min(0.95, base)) * 100) / 100;
-  }
-
-  private explainMethodology(
-    bySection: Map<Section, number>,
-    avg: number,
-    total: number,
-    sections: Section[],
-    kind: string,
-    confidence: number,
-  ): string {
-    const parts: string[] = [];
-    parts.push(
-      'Each objective section (Reading, Listening) is graded by comparing your answers to the correct keys. Raw accuracy is mapped linearly to a 0–30 scaled score per section.',
-    );
-    const lines = sections.map((s) => {
-      const v = bySection.get(s);
-      return v != null
-        ? `${s}: ${v}/30 (graded)`
-        : `${s}: ~${avg}/30 (estimated from graded sections — automatic scoring for this section arrives in a later phase)`;
-    });
-    parts.push(`Section scaled scores: ${lines.join('; ')}.`);
-    if (kind === 'SECTION') {
-      parts.push(
-        'Because this was a single-section practice, the total is a projection of that section onto the full 0–120 scale.',
-      );
-    } else {
-      parts.push('The total (0–120) is the sum of the four section scaled scores.');
+  explain(summary: Partial<Record<SectionName, SectionSummary>>, total: number, isFull: boolean, confidence: number): string {
+    const lines: string[] = [];
+    for (const [section, s] of Object.entries(summary) as Array<[SectionName, SectionSummary]>) {
+      if (section === 'READING' || section === 'LISTENING') {
+        const m = s.modules.map((x) => `module ${x.module}${x.module === 2 ? ` (${x.variant})` : ''}: ${x.correct}/${x.total}`).join(', ');
+        lines.push(`${section}: ${s.scaled}/30 — ${m}. Module 2 counts 60% and the ${s.path} path ${s.path === 'hard' ? 'allows scores up to 30' : 'caps the score at 24'}.`);
+      } else if (section === 'WRITING') {
+        lines.push(`WRITING: ${s.scaled}/30 — Build a Sentence 20%, Email 35%, Academic Discussion 45% (rubric 0–5 scores scaled to 0–30).`);
+      } else {
+        lines.push(`SPEAKING: ${s.scaled}/30 — Listen and Repeat 40%, Interview 60% (rubric 0–5 scores scaled to 0–30).`);
+      }
     }
-    parts.push(
-      `Estimated total: ${total}/120. Confidence: ${Math.round(confidence * 100)}% — confidence rises as more sections are fully graded and as you answer more items.`,
+    lines.push(
+      isFull
+        ? `The total is the sum of the four section scores = ${total}/120 (band ${totalToBand(total)}).`
+        : `Single-section practice: the section score is projected onto the 0–120 scale = ${total}/120.`,
     );
-    return parts.join(' ');
+    lines.push(
+      `Confidence ${Math.round(confidence * 100)}%: depends on the number of graded items, whether both adaptive modules were completed, and (for Writing/Speaking) whether an LLM rater with sampling or the heuristic fallback was used. These are internal estimates, not official ETS scores.`,
+    );
+    return lines.join(' ');
   }
 }

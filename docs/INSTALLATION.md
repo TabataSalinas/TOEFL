@@ -22,17 +22,12 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-La primera vez, genera el esquema y datos demo dentro del contenedor API:
+El contenedor de la API sincroniza el esquema al arrancar (`prisma migrate deploy` si existe `prisma/migrations`; si no, `prisma db push`).
+Para crear el usuario demo:
 
 ```bash
-docker compose exec api npx prisma migrate deploy
 docker compose exec api npx prisma db seed
 ```
-
-> Si aún no existe la carpeta `prisma/migrations` (primera vez en un repo
-> limpio), créala una vez en local con `npx prisma migrate dev --name init`
-> (ver Opción B) y vuelve a construir, **o** usa `npx prisma db push` dentro del
-> contenedor para sincronizar el esquema sin migraciones.
 
 Accede a:
 - Web: http://localhost:3000
@@ -74,7 +69,7 @@ npm install
 ```bash
 cd apps/api
 npx prisma generate
-npx prisma migrate dev --name init
+npx prisma db push          # o: npx prisma migrate dev --name init  (genera migraciones versionables)
 npx prisma db seed
 cd ../..
 ```
@@ -117,3 +112,11 @@ npm run test:e2e --workspace @toefl/api
   en dev local y a `db` dentro de Docker.
 - **Redis no disponible** — la app sigue funcionando (el cache se degrada con
   elegancia); solo verás un warning.
+
+## Voz, micrófono y audio
+
+- **Micrófono**: el navegador pide permiso al usar la prueba de equipo. En `localhost` funciona sin HTTPS; en un servidor **necesitas HTTPS**.
+- **Speech-to-text**: con `OPENAI_API_KEY` el servidor transcribe con Whisper (marcas de tiempo por palabra). Sin clave se usa el reconocimiento del
+  navegador (Chrome/Edge); en Firefox no hay transcripción y Speaking tendrá poca información.
+- **Audio de Listening/Speaking**: con clave se sintetiza en el servidor (TTS) y se cachea en `STORAGE_DIR/tts`; sin clave se usa la voz del navegador.
+- **Fuentes abiertas** (opcional): `SOURCES_ENABLED=true` y `CONTACT_EMAIL=tu@correo` (Wikimedia lo exige en el User-Agent).

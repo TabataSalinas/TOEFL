@@ -1,18 +1,9 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
-import { Prisma, Section } from '@prisma/client';
-import * as crypto from 'crypto';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiService } from '../ai/ai.service';
-import { GeneratedSection } from '../ai/ai.types';
-import {
-  FULL_EXAM_SECTION_ORDER,
-  SECTION_BLUEPRINTS,
-} from '../common/toefl.constants';
+import { FULL_EXAM_SECTION_ORDER, MODULE_BLUEPRINTS, SectionName, moduleCount } from '../common/toefl.constants';
+import { sha1 } from '../content/text-utils';
+import { ExamBuilderService } from './exam-builder.service';
 import { GenerateExamDto } from './dto/exam.dto';
 
 @Injectable()
@@ -22,196 +13,86 @@ export class ExamsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly ai: AiService,
+    private readonly builder: ExamBuilderService,
   ) {}
 
   /**
-   * Generate a new exam blueprint for the user. For FULL exams, generates all
-   * four sections; for SECTION exams, only the requested section. Reading and
-   * Listening are fully populated with questions; Speaking/Writing contain
-   * tasks (graded in later phases).
+   * Generate an exam in the 2026 format. Module 1 of each section is built now;
+   * Reading/Listening module 2 is built when module 1 is finished (adaptive routing).
    */
   async generate(userId: string, dto: GenerateExamDto) {
     const difficulty = dto.difficulty ?? 'standard';
-    const sections: Section[] =
-      dto.kind === 'FULL'
-        ? FULL_EXAM_SECTION_ORDER
-        : [this.requireSection(dto)];
-
-    const avoidTopics = await this.recentTopics(userId);
-
-    const title =
-      dto.kind === 'FULL'
-        ? `Full TOEFL Simulation (${difficulty})`
-        : `${sections[0]} Practice (${difficulty})`;
+    if (dto.kind === 'SECTION' && !dto.section) {
+      throw new BadRequestException('section is required when kind=SECTION');
+    }
+    const sections: SectionName[] = dto.kind === 'FULL' ? FULL_EXAM_SECTION_ORDER : [dto.section as SectionName];
 
     const exam = await this.prisma.exam.create({
       data: {
         kind: dto.kind,
-        title,
+        title: dto.kind === 'FULL' ? 'Full TOEFL iBT simulation (2026 format)' : `${sections[0][0]}${sections[0].slice(1).toLowerCase()} practice (2026 format)`,
         section: dto.kind === 'SECTION' ? sections[0] : null,
         difficulty,
         generatedBy: this.ai.activeProvider,
       },
     });
 
-    for (let i = 0; i < sections.length; i++) {
-      const section = sections[i];
-      const bp = SECTION_BLUEPRINTS[section];
-      const generated = await this.ai.generateSection({
-        section,
-        difficulty,
-        passages: bp.passages,
-        questionsPerPassage: bp.questionsPerPassage,
-        avoidTopics,
-      });
-      await this.persistSection(exam.id, section, i, generated);
+    try {
+      const history = await this.builder.history(userId);
+      await Promise.all(
+        sections.map((section, i) =>
+          this.builder.buildModule({ examId: exam.id, userId, section, module: 1, variant: 'core', order: i, history }),
+        ),
+      );
+    } catch (err) {
+      await this.prisma.exam.delete({ where: { id: exam.id } }).catch(() => undefined);
+      throw err;
     }
 
-    // Store a content hash to discourage accidental duplicates.
+    const bodies = await this.prisma.passage.findMany({ where: { examSection: { examId: exam.id } }, select: { contentFingerprint: true } });
     await this.prisma.exam.update({
       where: { id: exam.id },
-      data: { contentHash: crypto.randomUUID() },
+      data: { contentHash: sha1(bodies.map((b) => b.contentFingerprint ?? '').join('|')) },
     });
-
-    return this.findById(exam.id);
+    return this.summary(exam.id);
   }
 
-  private requireSection(dto: GenerateExamDto): Section {
-    if (!dto.section) {
-      throw new BadRequestException('section is required when kind=SECTION');
-    }
-    return dto.section as Section;
-  }
-
-  private async persistSection(
-    examId: string,
-    section: Section,
-    order: number,
-    generated: GeneratedSection,
-  ) {
-    const bp = SECTION_BLUEPRINTS[section];
-    const examSection = await this.prisma.examSection.create({
-      data: {
-        examId,
-        section,
-        order,
-        timeLimitSec: bp.timeLimitSec,
-        instructions: generated.instructions || bp.instructions,
-      },
-    });
-
-    // Objective sections (Reading/Listening)
-    let questionOrder = 0;
-    for (let p = 0; p < generated.passages.length; p++) {
-      const gp = generated.passages[p];
-      const passage = await this.prisma.passage.create({
-        data: {
-          examSectionId: examSection.id,
-          order: p,
-          title: gp.title,
-          body: gp.body,
-          audioUrl: null, // TTS synthesized in phase 2; transcript is in body
-          topic: gp.topic,
-          wordCount: gp.body.split(/\s+/).filter(Boolean).length,
-        },
-      });
-
-      for (const gq of gp.questions) {
-        await this.prisma.question.create({
-          data: {
-            examSectionId: examSection.id,
-            passageId: passage.id,
-            order: questionOrder++,
-            type: gq.type,
-            section,
-            prompt: gq.prompt,
-            options: gq.options as unknown as Prisma.InputJsonValue,
-            correctAnswer: gq.correctAnswer as unknown as Prisma.InputJsonValue,
-            explanation: gq.explanation,
-            skillTag: gq.skillTag,
-            points: gq.points,
-          },
-        });
-      }
-    }
-
-    // Productive sections (Speaking/Writing): store tasks as questions w/o options
-    if (generated.tasks?.length) {
-      for (const task of generated.tasks) {
-        await this.prisma.question.create({
-          data: {
-            examSectionId: examSection.id,
-            order: questionOrder++,
-            type: task.type,
-            section,
-            prompt: task.stimulus
-              ? `${task.stimulus}\n\n${task.prompt}`
-              : task.prompt,
-            options: Prisma.JsonNull,
-            correctAnswer: Prisma.JsonNull,
-            skillTag: task.skillTag,
-            points: 0,
-          },
-        });
-      }
-    }
-  }
-
-  /** Topics used in the user's recent exams, to reduce repetition. */
-  private async recentTopics(userId: string): Promise<string[]> {
-    const attempts = await this.prisma.examAttempt.findMany({
-      where: { userId },
-      orderBy: { startedAt: 'desc' },
-      take: 3,
-      select: {
-        exam: {
-          select: {
-            sections: { select: { passages: { select: { topic: true } } } },
-          },
-        },
-      },
-    });
-    const topics = new Set<string>();
-    for (const a of attempts) {
-      for (const s of a.exam.sections) {
-        for (const p of s.passages) {
-          if (p.topic) topics.add(p.topic);
-        }
-      }
-    }
-    return [...topics];
-  }
-
-  async findById(examId: string) {
+  /**
+   * Blueprint summary WITHOUT questions, options or answers — safe to show before and
+   * during an attempt (no answer leakage).
+   */
+  async summary(examId: string) {
     const exam = await this.prisma.exam.findUnique({
       where: { id: examId },
-      include: {
-        sections: {
-          orderBy: { order: 'asc' },
-          include: {
-            passages: { orderBy: { order: 'asc' } },
-            questions: { orderBy: { order: 'asc' } },
-          },
-        },
-      },
+      include: { sections: { orderBy: [{ order: 'asc' }, { module: 'asc' }], include: { _count: { select: { questions: true } } } } },
     });
     if (!exam) throw new NotFoundException('Exam not found');
-    return exam;
+    const sections = [...new Set(exam.sections.map((s) => s.section))].map((section) => {
+      const mods = exam.sections.filter((s) => s.section === section);
+      return {
+        section,
+        moduleCount: moduleCount(section as SectionName),
+        built: mods.map((m) => ({ module: m.module, variant: m.variant, questions: m._count.questions, timeLimitSec: m.timeLimitSec })),
+        tasks: (MODULE_BLUEPRINTS.find((b) => b.section === section && b.module === 1)?.tasks ?? []).map((t) => ({ kind: t.kind, title: t.title })),
+      };
+    });
+    return {
+      id: exam.id,
+      kind: exam.kind,
+      title: exam.title,
+      section: exam.section,
+      difficulty: exam.difficulty,
+      generatedBy: exam.generatedBy,
+      createdAt: exam.createdAt,
+      sections,
+    };
   }
 
   async list() {
     return this.prisma.exam.findMany({
       orderBy: { createdAt: 'desc' },
       take: 50,
-      select: {
-        id: true,
-        kind: true,
-        title: true,
-        section: true,
-        difficulty: true,
-        generatedBy: true,
-        createdAt: true,
-      },
+      select: { id: true, kind: true, title: true, section: true, difficulty: true, generatedBy: true, createdAt: true },
     });
   }
 }

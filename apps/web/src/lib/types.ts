@@ -11,30 +11,49 @@ export interface Option {
   text: string;
 }
 
+export type Meta = Record<string, any>;
+
 export interface Question {
   id: string;
   passageId: string | null;
   order: number;
   type: string;
-  section: Section;
+  taskKind: string | null;
   prompt: string;
   options: Option[] | null;
   points: number;
+  timeLimitSec: number | null;
+  meta: Meta;
+  audioUrl?: string;
 }
 
 export interface Passage {
   id: string;
   order: number;
+  kind: string | null;
   title: string | null;
-  body: string;
-  audioUrl: string | null;
   topic: string | null;
+  /** null for listening stimuli (audio only). */
+  body: string | null;
+  meta: Meta;
+}
+
+export interface Step {
+  id: string;
+  kind: string;
+  title: string;
+  instructions: string;
+  passageId: string;
+  questionIds: string[];
+  timeLimitSec?: number;
 }
 
 export interface SectionState {
   sectionAttemptId: string;
   section: Section;
   status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'EXPIRED';
+  module: number;
+  moduleCount: number;
   startedAt: string | null;
   deadlineAt: string | null;
   remainingSec: number | null;
@@ -49,17 +68,22 @@ export interface AttemptState {
   startedAt: string;
   completedAt: string | null;
   sections: SectionState[];
+  nextModule?: number | null;
 }
 
 export interface SectionPayload {
   sectionAttemptId: string;
   section: Section;
+  module: number;
+  moduleCount: number;
   instructions: string;
   timeLimitSec: number;
   startedAt: string;
   deadlineAt: string;
+  steps: Step[];
   passages: Passage[];
   questions: Question[];
+  savedAnswers: { questionId: string; response: unknown; locked: boolean }[];
 }
 
 export interface Dashboard {

@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsArray,
+  IsBoolean,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -35,6 +36,11 @@ export class SubmitAnswerDto {
   @IsInt()
   @Min(0)
   timeSpentSec?: number;
+
+  @ApiProperty({ required: false, description: 'Lock the answer (Listening: no going back)' })
+  @IsOptional()
+  @IsBoolean()
+  lock?: boolean;
 }
 
 export class SubmitAnswersDto {

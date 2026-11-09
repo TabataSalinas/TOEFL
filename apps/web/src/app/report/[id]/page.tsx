@@ -4,50 +4,31 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { AppShell } from '@/components/app-shell';
-import { Card, Stat, Badge, Spinner, Progress } from '@/components/ui';
+import { Badge, Card, Progress, Spinner, Stat } from '@/components/ui';
+import { EssayFeedback, RecordingFeedback } from '@/components/report/feedback';
+import { ModuleReview } from '@/components/report/review';
 import { api } from '@/lib/api';
-
-interface ReportItem {
-  questionId: string;
-  prompt: string;
-  type: string;
-  skillTag: string | null;
-  yourAnswer: unknown;
-  correctAnswer: unknown;
-  isCorrect: boolean | null;
-  explanation: string | null;
-  timeSpentSec: number;
-  passageTitle: string | null;
-}
-
-interface ReportSection {
-  section: string;
-  status: string;
-  timeSpentSec: number;
-  scaledScore: number | null;
-  band: number | null;
-  confidence: number | null;
-  rawCorrect: number;
-  rawTotal: number;
-  avgTimePerQuestionSec: number;
-  hardestSkills: string[];
-  items: ReportItem[];
-}
+import { Meta } from '@/lib/types';
 
 interface Report {
   attemptId: string;
   examTitle: string;
   kind: string;
-  status: string;
   completedAt: string | null;
-  scoreReport: {
-    totalScore: number;
-    totalBand: number | null;
-    confidence: number;
-    methodology: string | null;
-  } | null;
-  sections: ReportSection[];
+  scoreReport: { totalScore: number; totalBand: number | null; confidence: number; methodology: string | null } | null;
+  sections: Meta[];
 }
+
+const TASK_LABEL: Record<string, string> = {
+  COMPLETE_WORDS: 'Complete the Words',
+  DAILY_LIFE: 'Read in Daily Life',
+  ACADEMIC_PASSAGE: 'Academic Passage',
+  CHOOSE_RESPONSE: 'Choose a Response',
+  CONVERSATION: 'Conversations',
+  ANNOUNCEMENT: 'Announcements',
+  ACADEMIC_TALK: 'Academic Talks',
+  BUILD_SENTENCE: 'Build a Sentence',
+};
 
 export default function ReportPage() {
   const { id } = useParams<{ id: string }>();
@@ -55,53 +36,43 @@ export default function ReportPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    api
-      .get<Report>(`/reports/attempts/${id}`)
-      .then(setReport)
-      .catch((e) => setError((e as Error).message));
+    api.get<Report>(`/reports/attempts/${id}`).then(setReport).catch((e) => setError((e as Error).message));
   }, [id]);
 
   return (
     <AppShell>
       {error && <p className="text-red-500">{error}</p>}
       {!report && !error && <Spinner label="Loading report…" />}
-
       {report && (
         <div className="space-y-6">
           <div>
-            <Link href="/history" className="text-sm text-brand-500 hover:underline">
-              ← Back to history
-            </Link>
+            <Link href="/history" className="text-sm text-brand-500 hover:underline">← Back to history</Link>
             <h1 className="mt-1 text-2xl font-bold">{report.examTitle}</h1>
-            <p className="muted">
-              {report.completedAt
-                ? new Date(report.completedAt).toLocaleString()
-                : 'In progress'}
-            </p>
+            <p className="muted">{report.completedAt ? new Date(report.completedAt).toLocaleString() : 'In progress'}</p>
           </div>
 
           {report.scoreReport && (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <Stat
-                label="Estimated total"
-                value={`${report.scoreReport.totalScore}`}
-                sub="of 120"
-              />
-              <Stat
-                label="Band"
-                value={report.scoreReport.totalBand ?? '—'}
-                sub="1–6 scale (2026)"
-              />
-              <Stat
-                label="Confidence"
-                value={`${Math.round(report.scoreReport.confidence * 100)}%`}
-              />
-              <Stat
-                label="Sections"
-                value={report.sections.length}
-              />
+              <Stat label="Estimated total" value={report.scoreReport.totalScore} sub="of 120 (internal estimate)" />
+              <Stat label="Band" value={report.scoreReport.totalBand ?? '—'} sub="1–6 scale (2026)" />
+              <Stat label="Confidence" value={`${Math.round(report.scoreReport.confidence * 100)}%`} sub="how reliable this estimate is" />
+              <Stat label="Sections" value={report.sections.length} />
             </div>
           )}
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {report.sections.map((s) => (
+              <Card key={s.section}>
+                <div className="text-sm muted">{s.section}</div>
+                <div className="mt-1 text-2xl font-bold">{s.scaledScore ?? '—'}<span className="text-sm font-normal muted"> /30</span></div>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {s.band != null && <Badge>Band {s.band}</Badge>}
+                  {s.path && s.path !== 'core' && <Badge tone={s.path === 'hard' ? 'good' : 'warn'}>{s.path} path</Badge>}
+                  {s.confidence != null && <Badge>conf. {Math.round(s.confidence * 100)}%</Badge>}
+                </div>
+              </Card>
+            ))}
+          </div>
 
           {report.scoreReport?.methodology && (
             <Card>
@@ -111,107 +82,87 @@ export default function ReportPage() {
           )}
 
           {report.sections.map((s) => (
-            <Card key={s.section}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-lg font-semibold">{s.section}</h2>
-                <div className="flex items-center gap-2">
-                  {s.scaledScore != null && (
-                    <Badge tone="good">{s.scaledScore}/30</Badge>
-                  )}
-                  {s.band != null && <Badge>Band {s.band}</Badge>}
-                  <Badge tone={s.status === 'EXPIRED' ? 'warn' : 'default'}>
-                    {s.status}
-                  </Badge>
-                </div>
-              </div>
+            <section key={s.section} className="space-y-4">
+              <h2 className="text-xl font-bold">{s.section}</h2>
 
-              <div className="mt-3 grid gap-3 text-sm sm:grid-cols-3">
-                <div>
-                  <span className="muted">Correct: </span>
-                  {s.rawCorrect}/{s.rawTotal}
-                </div>
-                <div>
-                  <span className="muted">Avg time/question: </span>
-                  {s.avgTimePerQuestionSec}s
-                </div>
-                <div>
-                  <span className="muted">Time spent: </span>
-                  {Math.round(s.timeSpentSec / 60)} min
-                </div>
-              </div>
-
-              {s.rawTotal > 0 && (
-                <div className="mt-3">
-                  <Progress percent={(s.rawCorrect / s.rawTotal) * 100} />
-                </div>
-              )}
-
-              {s.hardestSkills.length > 0 && (
-                <p className="mt-3 text-sm">
-                  <span className="muted">Hardest skills: </span>
-                  {s.hardestSkills.join(', ')}
-                </p>
-              )}
-
-              {s.items.length > 0 && (
-                <details className="mt-4">
-                  <summary className="cursor-pointer text-sm font-medium text-brand-500">
-                    Review answers & explanations ({s.items.length})
-                  </summary>
-                  <div className="mt-3 space-y-3">
-                    {s.items.map((it, i) => (
-                      <div
-                        key={it.questionId}
-                        className="rounded-xl border p-3 text-sm"
-                        style={{ borderColor: 'rgb(var(--border))' }}
-                      >
-                        <div className="flex items-center gap-2">
-                          <Badge tone={it.isCorrect ? 'good' : 'bad'}>
-                            {it.isCorrect ? 'Correct' : 'Incorrect'}
-                          </Badge>
-                          <span className="muted">
-                            Q{i + 1} · {it.skillTag ?? it.type}
-                          </span>
+              {(s.section === 'READING' || s.section === 'LISTENING') && (
+                <>
+                  <Card>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      {(s.modules as Meta[]).map((m) => (
+                        <div key={m.module}>
+                          <div className="text-sm font-medium">Module {m.module}{m.module > 1 ? ` (${m.variant})` : ''}</div>
+                          <div className="text-xs muted">{m.correct}/{m.total} correct · avg {m.avgTimePerQuestionSec}s per question</div>
+                          <div className="mt-1"><Progress percent={m.accuracy * 100} /></div>
                         </div>
-                        <p className="mt-2 font-medium">{it.prompt}</p>
-                        <p className="mt-1">
-                          <span className="muted">Your answer: </span>
-                          {renderAns(it.yourAnswer)}
-                          {!it.isCorrect && (
-                            <>
-                              {' · '}
-                              <span className="muted">Correct: </span>
-                              {renderAns(it.correctAnswer)}
-                            </>
-                          )}
-                        </p>
-                        {it.explanation && (
-                          <p className="mt-2 muted">{it.explanation}</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </details>
+                      ))}
+                    </div>
+                    <h3 className="mb-2 mt-5 text-sm font-semibold">Accuracy by task type</h3>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {Object.entries(s.skillBreakdown as Meta).filter(([k]) => k.startsWith('task:')).map(([k, v]) => (
+                        <div key={k} className="text-sm">
+                          <div className="flex justify-between"><span>{TASK_LABEL[k.slice(5)] ?? k.slice(5)}</span><span className="muted">{(v as Meta).correct}/{(v as Meta).total}</span></div>
+                          <Progress percent={(v as Meta).accuracy * 100} />
+                        </div>
+                      ))}
+                    </div>
+                    {s.hardestSkills.length > 0 && (
+                      <p className="mt-4 text-sm"><span className="muted">Hardest skills: </span>{s.hardestSkills.join(', ')}</p>
+                    )}
+                  </Card>
+                  {(s.modules as Meta[]).map((m) => (
+                    <details key={m.module}>
+                      <summary className="cursor-pointer text-sm font-medium text-brand-500">Review answers and explanations — Module {m.module} ({m.items.length})</summary>
+                      <ModuleReview module={m} />
+                    </details>
+                  ))}
+                </>
               )}
-            </Card>
+
+              {s.section === 'WRITING' && (
+                <>
+                  <Card>
+                    <h3 className="font-semibold">Build a Sentence</h3>
+                    {(s.modules as Meta[])[0] && (
+                      <>
+                        <p className="mt-1 text-sm muted">{(s.modules as Meta[])[0].correct}/{(s.modules as Meta[])[0].total} sentences built correctly</p>
+                        <details className="mt-2">
+                          <summary className="cursor-pointer text-sm font-medium text-brand-500">Review sentences</summary>
+                          <ul className="mt-2 space-y-2 text-sm">
+                            {((s.modules as Meta[])[0].items as Meta[]).map((it) => (
+                              <li key={it.questionId} className="rounded-lg bg-black/5 p-3 dark:bg-white/5">
+                                <Badge tone={it.isCorrect ? 'good' : 'bad'}>{it.isCorrect ? 'Correct' : 'Incorrect'}</Badge>
+                                <span className="ml-2 muted">{it.prompt}</span>
+                                <p className="mt-1"><span className="muted">You: </span>{Array.isArray(it.yourAnswer) ? it.yourAnswer.filter(Boolean).join(' ') || '—' : '—'}</p>
+                                {!it.isCorrect && <p><span className="muted">Correct: </span><strong>{String(it.explanation).replace('Correct sentence: ', '')}</strong></p>}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      </>
+                    )}
+                  </Card>
+                  {(s.essays as Meta[]).map((e) => <EssayFeedback key={e.id} essay={e as never} />)}
+                </>
+              )}
+
+              {s.section === 'SPEAKING' && (
+                <>
+                  {(s.recordings as Meta[]).length === 0 && <Card><p className="text-sm muted">No recordings were captured.</p></Card>}
+                  {(s.recordings as Meta[]).map((r, i) => <RecordingFeedback key={r.id} rec={r} index={i + 1} />)}
+                </>
+              )}
+            </section>
           ))}
 
           <Card>
             <div className="flex items-center justify-between">
-              <p className="muted">Get a personalized study plan from your coach.</p>
-              <Link href="/tutor" className="btn-primary">
-                Open AI Coach
-              </Link>
+              <p className="muted">Your personalised study plan was refreshed with these results.</p>
+              <Link href="/tutor" className="btn-primary">Open AI Coach</Link>
             </div>
           </Card>
         </div>
       )}
     </AppShell>
   );
-}
-
-function renderAns(v: unknown): string {
-  if (v == null) return '—';
-  if (Array.isArray(v)) return v.join(', ');
-  return String(v);
 }

@@ -21,7 +21,7 @@ export class HealthController {
     return {
       status: 'ok',
       db,
-      aiProvider: process.env.OPENAI_API_KEY ? 'openai' : 'mock',
+      aiProvider: process.env.OPENAI_API_KEY ? 'openai' : 'bank',
       time: new Date().toISOString(),
     };
   }

@@ -56,6 +56,12 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      EVAL_SAMPLES: ${EVAL_SAMPLES:-2}
+      AI_VERIFY_KEYS: ${AI_VERIFY_KEYS:-true}
+      OPENAI_STT_MODEL: ${OPENAI_STT_MODEL:-whisper-1}
+      OPENAI_TTS_MODEL: ${OPENAI_TTS_MODEL:-tts-1}
+      SOURCES_ENABLED: ${SOURCES_ENABLED:-false}
+      CONTACT_EMAIL: ${CONTACT_EMAIL:-unset@example.invalid}
       STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
       STORAGE_DIR: /app/apps/api/storage
     ports:

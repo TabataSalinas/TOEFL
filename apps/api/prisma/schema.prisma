@@ -50,6 +50,11 @@ enum QuestionType {
   READING_RHETORICAL_PURPOSE
   READING_SENTENCE_SIMPLIFICATION
   READING_PROSE_SUMMARY
+  // 2026 format — Reading
+  READING_COMPLETE_WORDS
+  READING_MAIN_PURPOSE
+  READING_DETAIL
+  READING_PARAGRAPH_RELATIONSHIP
   // Listening
   LISTENING_MAIN_IDEA
   LISTENING_DETAIL
@@ -58,11 +63,19 @@ enum QuestionType {
   LISTENING_ORGANIZATION
   LISTENING_INFERENCE
   LISTENING_CONNECTING_CONTENT
+  // 2026 format — Listening
+  LISTENING_CHOOSE_RESPONSE
+  LISTENING_PREDICTION
   // Productive
   SPEAKING_INDEPENDENT
   SPEAKING_INTEGRATED
   WRITING_INTEGRATED
   WRITING_ACADEMIC_DISCUSSION
+  // 2026 format — Writing / Speaking
+  WRITING_BUILD_SENTENCE
+  WRITING_EMAIL
+  SPEAKING_LISTEN_REPEAT
+  SPEAKING_INTERVIEW
 }
 
 enum PlanItemStatus {
@@ -175,6 +188,10 @@ model ExamSection {
   timeLimitSec Int
   // Instructions shown before the section starts.
   instructions String?
+  // Adaptive modules (Reading/Listening): 1 or 2. Writing/Speaking are linear (module 1).
+  module       Int      @default(1)
+  // core (module 1) | easy | hard (module 2 routing)
+  variant      String   @default("core")
 
   passages  Passage[]
   questions Question[]
@@ -195,6 +212,17 @@ model Passage {
   audioUrl      String?
   topic         String?  // e.g. biology, art history, campus life
   wordCount     Int      @default(0)
+  // Stimulus kind: complete_words | email | notice | flyer | academic | choose_response |
+  // conversation | announcement | talk | build_sentence | email_task | discussion |
+  // listen_repeat | interview
+  kind          String?
+  // Kind-specific structured data (email headers, dialogue turns, discussion posts, ...)
+  meta          Json?
+  // Id of the curated bank item (if any) — used to avoid repeats
+  bankId        String?
+  // Open-license sources used to ground the content (attribution)
+  sourceRefs    Json?
+  contentFingerprint String?
 
   questions Question[]
 
@@ -220,6 +248,12 @@ model Question {
   // Skill tag for weakness analysis (e.g. "inference", "vocabulary").
   skillTag      String?
   points        Int      @default(1)
+  // 2026 task kind (COMPLETE_WORDS, BUILD_SENTENCE, ...)
+  taskKind      String?
+  // Kind-specific data (chunks/layout for Build a Sentence, highlighted word, ...)
+  meta          Json?
+  // Per-question clock in seconds (Listening / Speaking / Writing steps)
+  timeLimitSec  Int?
 
   answers Answer[]
 
@@ -252,6 +286,9 @@ model SectionAttempt {
   examAttemptId String
   examAttempt   ExamAttempt          @relation(fields: [examAttemptId], references: [id], onDelete: Cascade)
   section       Section
+  // Exam section (module) this attempt runs
+  examSectionId String?
+  module        Int                  @default(1)
   status        SectionAttemptStatus @default(NOT_STARTED)
   startedAt     DateTime?
   // Hard deadline computed from the section time limit.
@@ -276,6 +313,8 @@ model Answer {
   // Selected option id(s): JSON string | string[].
   response         Json?
   isCorrect        Boolean?
+  // Locked answers cannot be changed (Listening: no going back)
+  locked           Boolean  @default(false)
   pointsEarned     Int      @default(0)
   timeSpentSec     Int      @default(0)
   answeredAt       DateTime @default(now())
@@ -295,8 +334,14 @@ model Recording {
   fileUrl          String
   durationSec      Int      @default(0)
   transcript       String?
+  // client | whisper | none
+  transcriptSource String?
+  mimeType         String?
   // Speaking metrics JSON: wordsPerMinute, longPauses, fillers, etc.
   metrics          Json?
+  // Rubric evaluation (dimensions, errors, citations, ...)
+  analysis         Json?
+  score            Float?   // 0..5
   createdAt        DateTime @default(now())
 
   @@index([sectionAttemptId])
@@ -309,6 +354,8 @@ model Essay {
   questionId       String
   content          String
   wordCount        Int      @default(0)
+  taskType         String?  // WRITE_EMAIL | ACADEMIC_DISCUSSION
+  score            Float?   // 0..5
   // Writing feedback JSON: errors, improvedVersion, rubric breakdown.
   feedback         Json?
   createdAt        DateTime @default(now())
@@ -327,6 +374,8 @@ model ScoreReport {
   confidence    Float       @default(0) // 0..1
   // Human-readable explanation of how the estimate was computed.
   methodology   String?
+  // Aggregated per-section summary (modules, adaptive path, scaled score, band, confidence)
+  sectionSummary Json?
   createdAt     DateTime    @default(now())
 
   sectionScores SectionScore[]
@@ -420,7 +469,10 @@ model StudySession {
 model KnowledgeChunk {
   id         String   @id @default(cuid())
   section    Section?
-  kind       String   // rubric | example | guideline
+  kind       String   // rubric | anchor | guideline
+  taskType   String?  // WRITE_EMAIL | ACADEMIC_DISCUSSION | INTERVIEW | LISTEN_REPEAT | ...
+  tags       String[] @default([])
+  contentHash String? @unique
   title      String?
   content    String
   // Embedding stored as JSON array of floats (pgvector swap-in later).
@@ -429,4 +481,20 @@ model KnowledgeChunk {
   createdAt  DateTime @default(now())
 
   @@index([section, kind])
+}
+
+// ───────────────────── Open-license source documents ─────────────────────
+// Facts fetched from openly licensed sources (Wikipedia, OpenStax, NASA, ...) used
+// ONLY to ground original content. License + URL kept for attribution.
+model SourceDocument {
+  id        String   @id @default(cuid())
+  provider  String   // wikipedia | openstax | nasa | gutenberg | manual
+  title     String
+  url       String   @unique
+  license   String   // e.g. CC BY-SA 4.0, CC BY 4.0, Public Domain
+  topic     String?
+  text      String
+  fetchedAt DateTime @default(now())
+
+  @@index([topic])
 }

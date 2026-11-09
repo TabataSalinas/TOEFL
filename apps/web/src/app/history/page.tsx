@@ -10,6 +10,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   CartesianGrid,
+  Legend,
 } from 'recharts';
 import { AppShell } from '@/components/app-shell';
 import { Card, Badge, Spinner } from '@/components/ui';
@@ -29,22 +30,35 @@ interface Progress {
   best: number;
   latest: number | null;
   trend: string;
-  timeline: { date: string; total: number; title: string }[];
+  timeline: { date: string; total: number; title: string; sections: Record<string, number> }[];
+  comparison: {
+    total: { previous: number; current: number; delta: number };
+    sections: Record<string, { previous: number; current: number; delta: number }>;
+  } | null;
+}
+
+interface Timing {
+  taskKind: string;
+  avgSec: number;
+  samples: number;
 }
 
 export default function HistoryPage() {
   const [attempts, setAttempts] = useState<Attempt[] | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [timings, setTimings] = useState<Timing[]>([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
     Promise.all([
       api.get<Attempt[]>('/attempts'),
       api.get<Progress>('/reports/progress'),
+      api.get<Timing[]>('/reports/timings'),
     ])
-      .then(([a, p]) => {
+      .then(([a, p, t]) => {
         setAttempts(a);
         setProgress(p);
+        setTimings(t);
       })
       .catch((e) => setError((e as Error).message));
   }, []);
@@ -53,6 +67,10 @@ export default function HistoryPage() {
     progress?.timeline.map((t, i) => ({
       name: `#${i + 1}`,
       score: t.total,
+      Reading: t.sections.READING != null ? t.sections.READING * 4 : undefined,
+      Listening: t.sections.LISTENING != null ? t.sections.LISTENING * 4 : undefined,
+      Writing: t.sections.WRITING != null ? t.sections.WRITING * 4 : undefined,
+      Speaking: t.sections.SPEAKING != null ? t.sections.SPEAKING * 4 : undefined,
       date: new Date(t.date).toLocaleDateString(),
     })) ?? [];
 
@@ -95,7 +113,8 @@ export default function HistoryPage() {
 
       {chartData.length > 1 && (
         <Card className="mt-6">
-          <h2 className="mb-4 font-semibold">Score evolution</h2>
+          <h2 className="mb-1 font-semibold">Score evolution</h2>
+          <p className="mb-4 text-xs muted">Section lines are shown on the 0–120 scale (section score ×4) so they are comparable with the total.</p>
           <div style={{ width: '100%', height: 260 }}>
             <ResponsiveContainer>
               <LineChart data={chartData}>
@@ -103,15 +122,41 @@ export default function HistoryPage() {
                 <XAxis dataKey="name" />
                 <YAxis domain={[0, 120]} />
                 <Tooltip />
-                <Line
-                  type="monotone"
-                  dataKey="score"
-                  stroke="#3b63f6"
-                  strokeWidth={2}
-                  dot={{ r: 4 }}
-                />
+                <Legend />
+                <Line type="monotone" dataKey="score" name="Total" stroke="#3b63f6" strokeWidth={3} dot={{ r: 4 }} />
+                <Line type="monotone" dataKey="Reading" stroke="#10b981" dot={false} strokeDasharray="4 3" />
+                <Line type="monotone" dataKey="Listening" stroke="#f59e0b" dot={false} strokeDasharray="4 3" />
+                <Line type="monotone" dataKey="Writing" stroke="#ef4444" dot={false} strokeDasharray="4 3" />
+                <Line type="monotone" dataKey="Speaking" stroke="#8b5cf6" dot={false} strokeDasharray="4 3" />
               </LineChart>
             </ResponsiveContainer>
+          </div>
+        </Card>
+      )}
+
+      {progress?.comparison && (
+        <Card className="mt-6">
+          <h2 className="font-semibold">Last two full mocks</h2>
+          <div className="mt-3 grid gap-3 sm:grid-cols-5">
+            {[['TOTAL', progress.comparison.total], ...Object.entries(progress.comparison.sections)].map(([k, v]) => {
+              const d = v as { previous: number; current: number; delta: number };
+              return (
+                <div key={k as string} className="rounded-xl bg-black/5 p-3 dark:bg-white/10">
+                  <div className="text-xs muted">{k as string}</div>
+                  <div className="text-lg font-semibold tabular-nums">{d.previous} → {d.current}</div>
+                  <Badge tone={d.delta > 0 ? 'good' : d.delta < 0 ? 'bad' : 'default'}>{d.delta > 0 ? '+' : ''}{d.delta}</Badge>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {timings.length > 0 && (
+        <Card className="mt-6">
+          <h2 className="font-semibold">Average answer time per task</h2>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {timings.map((t) => <Badge key={t.taskKind}>{t.taskKind.replace(/_/g, ' ').toLowerCase()}: {t.avgSec}s</Badge>)}
           </div>
         </Card>
       )}
